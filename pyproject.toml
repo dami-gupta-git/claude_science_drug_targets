@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drug-targets"
+version = "0.0.0"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["lib", "lib.common"]
+
+[tool.pytest.ini_options]
+testpaths = ["lib"]
+# Keeps pytest off the repo root, where a sandbox-protected .env makes
+# collection fail on a PermissionError unrelated to the tests.
+norecursedirs = ["results", ".git", "__pycache__"]
