@@ -1,16 +1,9 @@
-"""Read data a repl cell wrote to hand off to a python cell.
+"""Read a repl->python handoff file.
 
-repl (has connectors, no filesystem grant) can't import this module, so
-it writes the handoff file inline:
-
-    import json, os
-    os.makedirs("handoff", exist_ok=True)
-    json.dump(data, open(f"handoff/{name}.json", "w"))
-
-python (has the filesystem grant, no connectors) reads it back with
-read_handoff. The path is relative to the session's working directory,
-never a hardcoded absolute path, because the workspace path contains a
-per-session ID.
+repl can't import this module (no filesystem grant), so it writes
+handoff/<name>.json inline: os.makedirs("handoff", exist_ok=True);
+json.dump(data, open(f"handoff/{name}.json", "w")). Path is relative —
+the workspace path has a per-session ID.
 """
 
 from __future__ import annotations

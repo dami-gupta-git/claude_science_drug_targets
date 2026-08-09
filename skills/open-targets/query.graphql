@@ -1,0 +1,69 @@
+# Every field below was confirmed by schema introspection and a live
+# EGFR (ENSG00000146648) run. Schema traps this query already works
+# around, so don't "simplify" them back:
+#   - drugAndClinicalCandidates replaced knownDrugs and takes no args.
+#   - Its rows have no mechanismOfAction and no singular `disease`.
+#     Mechanisms live on drug.mechanismsOfAction (drug-level: they list
+#     every target the drug hits, not just this one), and the diseases
+#     field is a list whose `disease` member can be null.
+#   - tractability has no id, only label/modality/value.
+#   - associatedDiseases paginates with page:{index,size}.
+#   - safetyLiabilities is often an empty list - absence is not safety.
+
+query TargetDossier($ensemblId: String!) {
+  target(ensemblId: $ensemblId) {
+    id
+    approvedSymbol
+    approvedName
+    biotype
+    tractability {
+      label
+      modality
+      value
+    }
+    drugAndClinicalCandidates {
+      count
+      rows {
+        maxClinicalStage
+        drug {
+          id
+          name
+          drugType
+          mechanismsOfAction {
+            rows {
+              actionType
+              mechanismOfAction
+            }
+          }
+        }
+        diseases {
+          disease {
+            id
+            name
+          }
+        }
+      }
+    }
+    associatedDiseases(page: {index: 0, size: 20}) {
+      count
+      rows {
+        score
+        disease {
+          id
+          name
+        }
+        datatypeScores {
+          id
+          score
+        }
+      }
+    }
+    safetyLiabilities {
+      event
+      eventId
+      datasource
+      literature
+      url
+    }
+  }
+}

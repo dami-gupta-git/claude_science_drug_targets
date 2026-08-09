@@ -6,12 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "drug-targets"
 version = "0.0.0"
 requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.3.3",
+    "pytest>=9.1.1",
+]
 
-[tool.setuptools]
-packages = ["lib", "lib.common"]
+[tool.setuptools.packages.find]
+# Auto-discover so a new lib/<name>/ subpackage installs without editing
+# this list.
+include = ["lib*"]
 
 [tool.pytest.ini_options]
-testpaths = ["lib"]
-# Keeps pytest off the repo root, where a sandbox-protected .env makes
-# collection fail on a PermissionError unrelated to the tests.
+testpaths = ["lib", "skills"]
+# Keeps pytest off the repo root: a local .env, if one is ever added
+# here for secrets, should not be walked as a collectable file.
 norecursedirs = ["results", ".git", "__pycache__"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
