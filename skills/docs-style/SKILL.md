@@ -6,6 +6,7 @@ description: Tone and writing conventions for any document produced in this proj
 - Write sentences, not phrases
 - Keep documents terse, professional, and concise
 - No double negatives
+- Avoid the use of em-dashes
 
 ## Strict Rules for TONE
 
@@ -37,3 +38,7 @@ detector was evaluated and not adopted" over "I tried it and it did not work".
 - In summary documents like README.md, reduce how many numbers are shown.
 - Avoid statements like '5 helper functions', or '2 files'. These change frequently, do not
 hardcode.
+
+## Prose vs tables
+- The intro/summary paragraph is prose only: classification, dominant finding, in plain English. No statistics.
+- Each section opens with one plain-English sentence stating the finding. Numbers follow after that, in a table or a supporting sentence — not in the opening sentence.

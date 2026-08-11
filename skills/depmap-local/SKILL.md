@@ -19,6 +19,17 @@ description: Query a locally downloaded DepMap release - CRISPR gene effect/depe
 - `depmap_fusion_contrast(gene, canonical_only=True)` — dependency in fusion-positive lines; distinguishes *untestable* (too few lines) from a real negative.
 - `depmap_prism_compounds(target)` — compounds annotated to the target. Defaults to newest release on disk; `depmap_prism_releases()` lists them.
 - `write_run(tables, out_dir)` — write name→DataFrame tables as CSVs. Call `write_readme` separately with `source="DepMap"`.
+- Invoke `docs-style` before writing findings prose.
+
+## Writing findings
+
+Follow the prose-vs-tables rule in `docs-style`. DepMap-specific guidance:
+
+- **Selectivity**: state the classification and what it implies ("selective — most lines unaffected, a subset dependent"). 
+- **Lineage enrichment**: name which lineages show enrichment and whether any survive multiple-testing correction.
+- **Contrast sections** (mutation, MSI, fusion): state direction and biological meaning. Explain acronyms on first use (e.g., "MSI — microsatellite instability").
+- **PRISM**: name compounds and whether they show activity. If none, note the target may lack annotated compounds in this library.
+- **Fusion**: state whether the result is testable; if not, give the reason in plain terms.
 
 ## Interpreting gene effect
 

@@ -21,6 +21,8 @@ description: Fetch target identity, top disease associations, genetic evidence, 
 
 ## Writing findings
 
+Follow the prose-vs-tables rule in `docs-style`. Open Targets-specific guidance:
+
 - **Associations**: put scores in a table (disease, score), not in prose.
   Name the top diseases; do not summarise as a count. Do not quote scores
   in the summary paragraph — the scale is undefined to the reader.

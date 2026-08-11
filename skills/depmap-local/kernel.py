@@ -374,8 +374,8 @@ def depmap_prism_compounds(target, root=None, release=None, verbose=True):
             continue
         lfc = mat.loc[r["IDs"]].dropna()
         rows.append({
-            "drug": r["Drug.Name"], "moa": r["MOA"], "dose_uM": r["dose"],
-            "screens": r["screen"], "release": release,
+            "drug": r["Drug.Name"], "compound_id": r["IDs"], "moa": r["MOA"],
+            "dose_uM": r["dose"], "screens": r["screen"], "release": release,
             "n_lines": int(lfc.size),
             "median_lfc": round(float(lfc.median()), 3) if lfc.size else None,
             "min_lfc": round(float(lfc.min()), 3) if lfc.size else None,
