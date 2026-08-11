@@ -554,8 +554,8 @@ def fuse(depmap_dir, ot_dir):
 FUSION_CSV_TABLES = {"verdict", "conflicts", "disease_lineage", "drugs_joined"}
 
 
-def write_fusion_run(tables, sources, out_dir):
-    """Write verdict, conflicts, disease_lineage, drugs_joined as CSVs; write sources.json."""
+def write_fusion_run(tables, sources, out_dir, gene):
+    """Write CSVs, sources.json, and README.md for a fusion run."""
     out_dir = Path(out_dir)
     written = {}
     for name, df in tables.items():
@@ -567,6 +567,7 @@ def write_fusion_run(tables, sources, out_dir):
     sources_path = out_dir / "sources.json"
     sources_path.write_text(json.dumps(sources, indent=2, default=str))
     written["sources"] = sources_path
+    written["readme"] = write_fusion_readme(out_dir, gene, tables, sources)
     return written
 
 
@@ -751,7 +752,7 @@ def write_fusion_readme(out_dir, gene, tables, sources):
         ts = src.get("timestamp", "unknown")
         prov.append(f"{src_name} run {ts} ({action})")
 
-    write_readme(
+    return write_readme(
         path=Path(out_dir) / "README.md",
         subject=gene,
         summary=intro,
@@ -805,8 +806,9 @@ def ensure_depmap_run(gene, reuse=True, max_age_days=None, root=None,
         print(f"[dry_run] Would run depmap-local for {gene}")
         return None
 
-    import importlib.util, sys as _sys
-    kernel_path = Path(__file__).resolve().parent.parent / "depmap-local" / "kernel.py"
+    import importlib.util, sys as _sys, inspect as _inspect
+    here = Path(_sys._getframe().f_code.co_filename).resolve().parent
+    kernel_path = here.parent / "depmap-local" / "kernel.py"
     spec = importlib.util.spec_from_file_location("depmap_local_kernel", kernel_path)
     dk = importlib.util.module_from_spec(spec)
     _sys.modules[spec.name] = dk
@@ -827,7 +829,37 @@ def ensure_depmap_run(gene, reuse=True, max_age_days=None, root=None,
     prism = dk.depmap_prism_compounds(gene, root=root)
     if len(prism) > 0:
         tables["prism_compounds"] = prism
-    dk.write_run(tables, out)
+
+    # dk.write_run additionally requires subject/summary/steps (a README).
+    # This sub-run is an internal input to the fusion; its own README is a
+    # generic pointer to the fusion output, not an independent finding.
+    steps = []
+    for name, df in tables.items():
+        label = name.replace("_", " ").title()
+        if len(df) == 0:
+            steps.append({"name": label, "skipped": "No rows for this table."})
+        else:
+            steps.append({
+                "name": label,
+                "finding": (
+                    f"Computed as an input to the depmap-ot-fusion run for {gene}; "
+                    "see that run's README for interpretation."
+                ),
+                "table": df.to_dict(orient="records"),
+            })
+    if "write_run" in _inspect.signature(dk.write_run).parameters or True:
+        params = _inspect.signature(dk.write_run).parameters
+        if {"subject", "summary", "steps"} <= set(params):
+            dk.write_run(
+                tables, out, subject=gene,
+                summary=(
+                    f"Automated DepMap sub-run for {gene}, generated as an input to "
+                    "depmap-ot-fusion."
+                ),
+                steps=steps,
+            )
+        else:
+            dk.write_run(tables, out)
     return out
 
 
@@ -849,8 +881,9 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
         print(f"[dry_run] Would run open-targets for {gene}")
         return None
 
-    import importlib.util, sys as _sys, requests
-    kernel_path = Path(__file__).resolve().parent.parent / "open-targets" / "kernel.py"
+    import importlib.util, sys as _sys, requests, inspect as _inspect
+    here = Path(_sys._getframe().f_code.co_filename).resolve().parent
+    kernel_path = here.parent / "open-targets" / "kernel.py"
     spec = importlib.util.spec_from_file_location("open_targets_kernel", kernel_path)
     ok = importlib.util.module_from_spec(spec)
     _sys.modules[spec.name] = ok
@@ -858,7 +891,7 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
 
     ensembl_id = resolve_ensembl_id(gene)
 
-    query_path = Path(__file__).resolve().parent.parent / "open-targets" / "query.graphql"
+    query_path = here.parent / "open-targets" / "query.graphql"
     query = query_path.read_text()
 
     r = requests.post(
@@ -870,7 +903,44 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
     data = r.json().get("data", {})
 
     out = results_dir("open-targets", gene.lower())
-    ok.write_run(data, out)
+    # ok.write_run additionally requires subject/summary/steps (a README).
+    # This sub-run is an internal input to the fusion; its own README is a
+    # generic pointer to the fusion output, not an independent finding.
+    params = _inspect.signature(ok.write_run).parameters
+    if {"subject", "summary", "steps"} <= set(params):
+        tables = {
+            "identity": ok.identity_table(data),
+            "associations": ok.associations_table(data),
+            "genetic_evidence": ok.genetic_evidence_table(data),
+            "known_drugs": ok.known_drugs_table(data),
+            "tractability": ok.tractability_table(data),
+            "safety": ok.safety_table(data),
+        }
+        steps = []
+        for name, df in tables.items():
+            label = name.replace("_", " ").title()
+            if len(df) == 0:
+                steps.append({"name": label, "skipped": "No rows for this table."})
+            else:
+                steps.append({
+                    "name": label,
+                    "finding": (
+                        f"Computed as an input to the depmap-ot-fusion run for {gene}; "
+                        "see that run's README for interpretation."
+                    ),
+                    "table": df.to_dict(orient="records"),
+                })
+        ok.write_run(
+            data, out, subject=gene,
+            summary=(
+                f"Automated Open Targets sub-run for {gene}, generated as an input to "
+                "depmap-ot-fusion."
+            ),
+            steps=steps,
+            source="Open Targets",
+        )
+    else:
+        ok.write_run(data, out)
     return out
 
 
@@ -926,6 +996,5 @@ def run_depmap_ot_fusion(gene, reuse=True, max_age_days=None,
         },
     }
 
-    write_fusion_run(tables, sources, out)
-    write_fusion_readme(out, gene_upper, tables, sources)
+    write_fusion_run(tables, sources, out, gene_upper)
     return out

@@ -212,10 +212,11 @@ def test_write_fusion_run_creates_files(wrn_depmap_dir, wrn_ot_dir, tmp_path):
                "open_targets": {"reused": False, "timestamp": "2026-07-01_120000"}}
     out = tmp_path / "out"
     out.mkdir()
-    written = kernel.write_fusion_run(tables, sources, out)
+    written = kernel.write_fusion_run(tables, sources, out, "WRN")
     for name in ("verdict", "conflicts", "disease_lineage", "drugs_joined"):
         assert (out / f"{name}.csv").exists()
     assert (out / "sources.json").exists()
+    assert (out / "README.md").exists()
     import json
     src = json.loads((out / "sources.json").read_text())
     assert "depmap" in src
