@@ -556,8 +556,9 @@ def build_depmap_cache(root=None, verbose=True):
     return built
 
 
-def write_run(tables, out_dir):
-    """Write name→DataFrame tables as CSVs into out_dir. Call write_readme separately.
+def write_run(tables, out_dir, subject, summary, steps, source="DepMap",
+              limits=None):
+    """Write name→DataFrame tables as CSVs into out_dir, then write README.md.
 
     tables: dict of {name: DataFrame} — pass whatever analyses were run.
     Returns dict of {name: Path}.
@@ -569,6 +570,8 @@ def write_run(tables, out_dir):
         path = out_dir / f"{name}.csv"
         df.to_csv(path, index=False)
         written[name] = path
+    written["readme"] = write_readme(out_dir / "README.md", subject, summary,
+                                     steps, source=source, limits=limits)
     return written
 
 

@@ -148,8 +148,10 @@ def safety_table(data: dict) -> pd.DataFrame:
 
 
 
-def write_run(data: dict, out_dir: Path) -> dict[str, Path]:
-    """Write one CSV per table into out_dir. Call write_readme separately."""
+def write_run(data: dict, out_dir: Path, subject: str, summary: str,
+              steps: list[dict], source: str | None = None,
+              limits: list[str] | None = None) -> dict[str, Path]:
+    """Write one CSV per table into out_dir, then write README.md."""
     written = {}
     for name, table_fn in (
         ("identity", identity_table),
@@ -162,4 +164,6 @@ def write_run(data: dict, out_dir: Path) -> dict[str, Path]:
         path = out_dir / f"{name}.csv"
         table_fn(data).to_csv(path, index=False)
         written[name] = path
+    written["readme"] = write_readme(out_dir / "README.md", subject, summary,
+                                     steps, source=source, limits=limits)
     return written

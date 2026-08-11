@@ -18,7 +18,7 @@ description: Query a locally downloaded DepMap release - CRISPR gene effect/depe
 - `depmap_mutation_contrast(dep_gene, marker_gene)` — genotype-driven dependency.
 - `depmap_fusion_contrast(gene, canonical_only=True)` — dependency in fusion-positive lines; distinguishes *untestable* (too few lines) from a real negative.
 - `depmap_prism_compounds(target)` — compounds annotated to the target. Defaults to newest release on disk; `depmap_prism_releases()` lists them.
-- `write_run(tables, out_dir)` — write name→DataFrame tables as CSVs. Call `write_readme` separately with `source="DepMap"`.
+- `write_run(tables, out_dir, subject, summary, steps)` — write CSVs and README.md in one call. Defaults to `source="DepMap"`.
 - Invoke `docs-style` before writing findings prose.
 
 ## Writing findings

@@ -228,10 +228,10 @@ def test_markdown_table():
 
 
 def test_write_run(tmp_path):
-    written = kernel.write_run(SAMPLE, tmp_path)
+    written = kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.", SAMPLE_STEPS)
     assert set(written) == {
         "identity", "known_drugs", "tractability",
-        "associations", "genetic_evidence", "safety",
+        "associations", "genetic_evidence", "safety", "readme",
     }
     for path in written.values():
         assert path.is_file()

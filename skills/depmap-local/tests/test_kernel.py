@@ -148,7 +148,9 @@ def test_bh_adjust_aligns_to_input_order():
 def test_write_run_writes_csvs(tmp_path):
     import pandas as pd
     tables = {"foo": pd.DataFrame([{"a": 1}])}
-    written = kernel.write_run(tables, tmp_path)
-    assert set(written) == {"foo"}
+    steps = [{"name": "Selectivity", "finding": "Selective dependency."}]
+    written = kernel.write_run(tables, tmp_path, "GENE1", "Summary.", steps)
+    assert set(written) == {"foo", "readme"}
     assert written["foo"].is_file()
     assert written["foo"].read_text().strip().splitlines() == ["a", "1"]
+    assert written["readme"].is_file()

@@ -40,5 +40,5 @@ detector was evaluated and not adopted" over "I tried it and it did not work".
 hardcode.
 
 ## Prose vs tables
-- The intro/summary paragraph is prose only: classification, dominant finding, in plain English. No statistics.
+- The intro/summary paragraph is prose only: classification, dominant finding, in plain English. No statistics. It should be about 3 sentences long. If any numbers are included, explain what they are, don't just put them in brackets.
 - Each section opens with one plain-English sentence stating the finding. Numbers follow after that, in a table or a supporting sentence — not in the opening sentence.

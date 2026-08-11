@@ -12,20 +12,22 @@ description: Fetch target identity, top disease associations, genetic evidence, 
 - `repl`: run `query.graphql` against `open_targets_graphql`, write the
   raw response to `handoff/open_targets_<gene>.json`.
 - `python`: `read_handoff` → `results_dir("open-targets", gene)` →
-  `write_run(data, out)` writes six CSVs.
-- Read the CSVs back. Write findings as `summary` and `steps` derived
+  read the CSVs back; write findings as `summary` and `steps` derived
   strictly from what the CSVs contain — do not state values not present
   in the saved data. Invoke `docs-style` for prose tone.
-- Call `write_readme(out / "README.md", gene, summary, steps)` to write
-  the README. See README.md for the exact call signature.
+- `write_run(data, out, subject, summary, steps)` writes six CSVs and
+  README.md in one call.
 
 ## Writing findings
 
 Follow the prose-vs-tables rule in `docs-style`. Open Targets-specific guidance:
 
 - **Associations**: put scores in a table (disease, score), not in prose.
-  Name the top diseases; do not summarise as a count. Do not quote scores
-  in the summary paragraph — the scale is undefined to the reader.
+  Name the top diseases; do not summarise as a count. The finding must
+  define the score scale: `overall_score` is 0–1, aggregated across
+  evidence datatypes by Open Targets; higher means stronger evidence.
+  Do not quote scores in the summary paragraph — define the scale once
+  in the finding text, then let the table carry the values.
 - **Tractability**: name the specific labels where `value` is True (e.g.
   "Small-molecule structural evidence, PROTAC criteria"). Do not report
   True/False counts or row totals — they carry no meaning to a reader.
