@@ -295,13 +295,28 @@ def build_verdict(depmap_frames, ot_frames):
     classification = str(sel.iloc[0]["classification"])
     frac_dependent = float(sel.iloc[0]["frac_dependent"])
 
-    sig_lin = lin[lin["p_bh"] < 0.05] if len(lin) > 0 else pd.DataFrame()
+    # A lineage only counts as a candidate dependency if the knockout effect
+    # actually points the dependency direction (mean_effect < 0) and at least
+    # one line in it crosses the dependency threshold (frac_dependent > 0).
+    # p_bh alone is not enough: for a tumor suppressor, EVERY lineage's mean
+    # effect is positive (knockout helps growth), and Mann-Whitney still finds
+    # a "significant" lineage among them by chance -- that lineage is not
+    # dependent on the gene, it merely helps growth *less* than the others.
+    # See docs/depmap_ot_fusion_lineage_direction.md for the RB1 case that
+    # surfaced this.
+    if len(lin) > 0:
+        dep_direction = lin[(lin["mean_effect"] < 0) & (lin["frac_dependent"] > 0)]
+    else:
+        dep_direction = pd.DataFrame()
+
+    sig_lin = dep_direction[dep_direction["p_bh"] < 0.05] if len(dep_direction) > 0 else pd.DataFrame()
     top_lineage_significant = len(sig_lin) > 0
     if len(sig_lin) > 0:
         top = sig_lin.sort_values("p_bh").iloc[0]
-    elif len(lin) > 0:
-        top = lin.sort_values("p_bh").iloc[0]
+    elif len(dep_direction) > 0:
+        top = dep_direction.sort_values("p_bh").iloc[0]
     else:
+        # No lineage shows the dependency direction at all -- do not name one.
         top = None
     top_lineage = str(top["lineage"]) if top is not None else None
     top_lineage_p_bh = float(top["p_bh"]) if top is not None else None
@@ -352,7 +367,17 @@ def find_conflicts(depmap_frames, ot_frames):
 
     gene = str(sel.iloc[0]["gene"])
     classification = str(sel.iloc[0]["classification"])
-    sig_lin = lin[lin["p_bh"] < 0.05] if len(lin) > 0 else pd.DataFrame()
+    # A lineage only counts as a dependency if mean_effect < 0 (knockout hurts
+    # growth) and frac_dependent > 0 (at least one line actually crosses the
+    # threshold) -- see the matching note in build_verdict and
+    # docs/depmap_ot_fusion_lineage_direction.md. Without this filter, a
+    # tumor suppressor's uniformly-positive lineage effects can still produce
+    # a "significant" p_bh entry that is not a dependency in either direction.
+    dep_direction = (
+        lin[(lin["mean_effect"] < 0) & (lin["frac_dependent"] > 0)]
+        if len(lin) > 0 else pd.DataFrame()
+    )
+    sig_lin = dep_direction[dep_direction["p_bh"] < 0.05] if len(dep_direction) > 0 else pd.DataFrame()
     assoc_scored = assoc.dropna(subset=["overall_score"]) if len(assoc) > 0 else assoc
     rows = []
 
@@ -655,8 +680,20 @@ def write_fusion_readme(out_dir, gene, tables, sources):
 
     lin_step = {"name": "Dependency", "finding": dep_finding}
     if len(lin_enrich) > 0:
-        sig = lin_enrich[lin_enrich["p_bh"] < 0.05].sort_values("p_bh")
-        display = sig if len(sig) > 0 else lin_enrich.sort_values("p_bh").head(5)
+        # Same direction filter as build_verdict/find_conflicts: a lineage
+        # only belongs in this table if the knockout effect actually points
+        # toward dependency (mean_effect < 0, frac_dependent > 0), not merely
+        # a lineage that differs from the rest by p_bh.
+        lin_dep_dir = lin_enrich[
+            (lin_enrich["mean_effect"] < 0) & (lin_enrich["frac_dependent"] > 0)
+        ]
+        sig = lin_dep_dir[lin_dep_dir["p_bh"] < 0.05].sort_values("p_bh")
+        if len(sig) > 0:
+            display = sig
+        elif len(lin_dep_dir) > 0:
+            display = lin_dep_dir.sort_values("p_bh").head(5)
+        else:
+            display = lin_enrich.iloc[0:0]  # no lineage shows the dependency direction
         lin_rows = []
         for _, r in display.iterrows():
             lin_rows.append({
