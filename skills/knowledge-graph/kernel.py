@@ -18,8 +18,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from lib.common.paths import project_root, results_dir
-from lib.common.reporting import write_readme
 
 NODE_COLUMNS = ["node_id", "node_type", "label"]
 
@@ -79,6 +77,7 @@ def read_csv_rows(path: Path) -> list:
 
 def find_latest_run(skill_domain: str, subject_snake: str, base: Path = None) -> Path:
     """Newest results/<skill_domain>/<subject_snake>/<timestamp>/ dir, or None."""
+    from lib.common.paths import project_root
     base = Path(base) if base else project_root() / "results"
     subject_dir = base / skill_domain / subject_snake
     if not subject_dir.is_dir():
@@ -207,6 +206,7 @@ def graph_store_dir(root: str = None) -> Path:
     than getting a fresh timestamped directory each time - see
     merge_into_store for how updates are reconciled.
     """
+    from lib.common.paths import project_root
     base = Path(root) if root else project_root() / "results"
     store = base / "knowledge_graph"
     store.mkdir(parents=True, exist_ok=True)
@@ -300,6 +300,8 @@ def write_sync_report(subject: str, summary: str, steps: list,
     The persistent store (nodes.csv/edges.csv in graph_store_dir()) is not
     duplicated here; this is only the audit trail for one sync call.
     """
+    from lib.common.paths import results_dir
+    from lib.common.reporting import write_readme
     out_dir = results_dir("knowledge-graph", subject.lower())
     return write_readme(out_dir / "README.md", subject, summary, steps,
                         source=source, limits=limits)

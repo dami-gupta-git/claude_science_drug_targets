@@ -42,3 +42,45 @@ hardcode.
 ## Prose vs tables
 - The intro/summary paragraph is prose only: classification, dominant finding, in plain English. No statistics. It should be about 3 sentences long. If any numbers are included, explain what they are, don't just put them in brackets.
 - Each section opens with one plain-English sentence stating the finding. Numbers follow after that, in a table or a supporting sentence — not in the opening sentence.
+
+## Verify the prose against the table before writing it
+
+The kernels compute correctly; the summarising step is where documents go wrong.
+Every error found in review of these runs has been a hand-written sentence that
+the accompanying CSV did not support, never a wrong number in the CSV. Treat the
+prose as the untrusted part.
+
+Four rules, each addressing a failure that has actually occurred:
+
+- **Derive every count, never type it.** A sentence saying "49 of 54 tissues are
+  typical" or "five lineages reach significance" must come from
+  `df.level.value_counts()` or `int((df.p < 0.05).sum())` evaluated in the same
+  cell that writes the text. A tally read off a printed table by eye will
+  sometimes be the count of the rows that happened to be visible.
+- **Derive every ranking, and state what was excluded.** "The highest ranking
+  tissues are X, Y, Z" must be a slice of the sorted frame. If the ranking
+  excludes some rows — cell lines among tissues, untested lineages, off-scope
+  papers — the exclusion is part of the claim and belongs in the sentence.
+- **Never write a path or identifier you have not printed.** A run directory, a
+  timestamp, an accession or a PMID goes into prose only by reading the variable
+  that holds it. A plausible-looking timestamp typed from memory will be wrong
+  and will point a reader at a directory that does not exist.
+- **Count the sources that bear on the claim, not the sources in the run.** "All
+  five sources agree" is false when two of them are silent on the point. Name
+  the sources that speak to it and say the others do not.
+
+Two habits behind these failures are worth naming, because they recur:
+
+- A claim that makes two independent results line up neatly is the one most
+  likely to have been trimmed to fit. When a ranking, count or overlap appears to
+  corroborate another run, re-derive it before writing the sentence.
+- A qualitative assertion is as checkable as a numeric one. "Already used
+  clinically", "well characterised", "routinely tested" either trace to a run in
+  the report or come out. Absence of a curated record is not evidence, and
+  neither is background knowledge that no run supports.
+
+For a report collating several runs, write the self-audit as a table: one row per
+claim, with the value in the prose, the value re-derived from source, and the
+verdict. Ship it beside the report. It is cheap, it catches this class of error
+before a reader does, and a claim that cannot be expressed as a row in it is
+usually a claim that should not be in the report.

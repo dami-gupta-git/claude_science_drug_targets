@@ -235,3 +235,131 @@ def test_write_run(tmp_path):
     }
     for path in written.values():
         assert path.is_file()
+
+
+# --- gnomAD -----------------------------------------------------------------
+
+GNOMAD_GENE = {
+    "gene_id": "ENSG00000165392",
+    "symbol": "WRN",
+    "dataset": "gnomad_r4",
+    "gnomad_constraint": {
+        "oe_lof": 0.82, "oe_lof_lower": 0.72, "oe_lof_upper": 0.94,
+        "obs_lof": 149, "exp_lof": 180.7, "pLI": 0.0, "lof_z": -1.2,
+        "oe_mis": 0.98, "mis_z": 0.1, "flags": [],
+    },
+    "variants": [
+        {"variant_id": "8-1-A-T", "consequence": "frameshift_variant",
+         "hgvsp": "p.Ser2fs", "lof": "HC", "lof_filter": None,
+         "flags": ["lof_flag"],
+         "exome": {"ac": 5, "an": 1000, "homozygote_count": 1},
+         "genome": {"ac": 1, "an": 500, "homozygote_count": 0}},
+        {"variant_id": "8-2-G-C", "consequence": "missense_variant",
+         "hgvsp": "p.Ala3Gly", "lof": None, "lof_filter": None, "flags": [],
+         "exome": {"ac": 90, "an": 1000, "homozygote_count": 4},
+         "genome": None},
+        {"variant_id": "8-3-C-T", "consequence": "stop_gained",
+         "hgvsp": "p.Arg9Ter", "lof": "LC", "lof_filter": "END_TRUNC",
+         "flags": [], "exome": {"ac": 2, "an": 1000, "homozygote_count": 0},
+         "genome": None},
+    ],
+}
+
+
+def test_gnomad_constraint_table():
+    row = kernel.gnomad_constraint_table(GNOMAD_GENE).iloc[0]
+    assert row["loeuf"] == 0.94
+    assert row["obs_lof"] == 149
+    assert "ENSG00000165392" in row["gnomad_url"]
+
+
+def test_gnomad_constraint_table_raises_without_constraint():
+    gene = {**GNOMAD_GENE, "gnomad_constraint": None}
+    with pytest.raises(ValueError, match="unmeasured"):
+        kernel.gnomad_constraint_table(gene)
+
+
+def test_gnomad_lof_variants_keeps_high_confidence_only():
+    table = kernel.gnomad_lof_variants_table(GNOMAD_GENE)
+    assert list(table.variant_id) == ["8-1-A-T"]
+    assert table.iloc[0]["allele_count"] == 6
+    assert table.iloc[0]["allele_number"] == 1500
+    assert table.iloc[0]["homozygote_count"] == 1
+
+
+def test_gnomad_carrier_summary():
+    row = kernel.gnomad_carrier_summary_table(GNOMAD_GENE).iloc[0]
+    assert row["n_lof_variants"] == 1
+    assert row["total_lof_allele_count"] == 6
+    assert row["total_homozygotes"] == 1
+    assert row["loeuf"] == 0.94
+
+
+def test_gnomad_carrier_summary_with_no_lof_variants():
+    row = kernel.gnomad_carrier_summary_table({**GNOMAD_GENE, "variants": []}).iloc[0]
+    assert row["n_lof_variants"] == 0
+    assert row["max_allele_frequency"] is None
+
+
+# --- cBioPortal -------------------------------------------------------------
+
+RANGES = {"helicase": (558, 724)}
+
+MUTATIONS = [
+    {"studyId": "s1", "sampleId": "S-1", "patientId": "P-1",
+     "proteinChange": "R600C", "mutationType": "Missense_Mutation",
+     "proteinPosStart": 600, "tumorAltCount": 10, "tumorRefCount": 90},
+    {"studyId": "s1", "sampleId": "S-2", "patientId": "P-2",
+     "proteinChange": "L44I", "mutationType": "Missense_Mutation",
+     "proteinPosStart": 44, "tumorAltCount": 20, "tumorRefCount": 20},
+    {"studyId": "s1", "sampleId": "S-9", "patientId": "P-9",
+     "proteinChange": "R700H", "mutationType": "Missense_Mutation",
+     "proteinPosStart": 700, "tumorAltCount": None, "tumorRefCount": None},
+]
+
+
+def test_residue_range_hit():
+    assert kernel.residue_range_hit(600, RANGES) == "helicase"
+    assert kernel.residue_range_hit(558, RANGES) == "helicase"
+    assert kernel.residue_range_hit(724, RANGES) == "helicase"
+    assert kernel.residue_range_hit(44, RANGES) is None
+    assert kernel.residue_range_hit(None, RANGES) is None
+    assert kernel.residue_range_hit("", RANGES) is None
+
+
+def test_msi_high_samples_filters_and_ignores_non_numeric():
+    rows = [{"sampleId": "S-1", "value": "25.0"},
+            {"sampleId": "S-2", "value": "3.1"},
+            {"sampleId": "S-3", "value": "NA"}]
+    assert kernel.msi_high_samples(rows, 10.0) == {"S-1": 25.0}
+
+
+def test_tumour_mutations_table_restricts_to_scored_msi_high_samples():
+    table = kernel.tumour_mutations_table(
+        MUTATIONS, {"S-1": 25.0, "S-2": 30.0}, RANGES, "MSI_SENSOR_SCORE")
+    assert list(table.sample_id) == ["S-1", "S-2"]
+    assert list(table.residue_range) == ["helicase", None]
+    assert table.iloc[0]["variant_allele_frequency"] == 0.1
+
+
+def test_tumour_mutations_table_leaves_vaf_empty_without_read_counts():
+    table = kernel.tumour_mutations_table(
+        MUTATIONS, {"S-9": 40.0}, RANGES, "MSI_SENSOR_SCORE")
+    assert table.iloc[0]["variant_allele_frequency"] is None
+
+
+def test_write_run_adds_supplied_sections(tmp_path):
+    cohort = {"mutations": kernel.tumour_mutations_table(
+                  MUTATIONS, {"S-1": 25.0}, RANGES, "MSI_SENSOR_SCORE"),
+              "cohort": kernel.cbioportal_cohort_table([
+                  {"study_id": "s1", "attribute_id": "MSI_SENSOR_SCORE",
+                   "threshold": 10.0, "n_samples_scored": 100,
+                   "n_msi_high_samples": 12, "n_msi_high_mutated": 1,
+                   "n_msi_high_in_range": 1}])}
+    written = kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.", SAMPLE_STEPS,
+                               gnomad=GNOMAD_GENE, cbioportal=cohort)
+    assert "gnomad_constraint" in written
+    assert "tumour_cohort" in written
+    assert "msi_dose_response" not in written
+    for path in written.values():
+        assert path.is_file()

@@ -7,7 +7,7 @@ Europe PMC literature, and writes them with source citations to
 
 | File | Purpose |
 |---|---|
-| `kernel.py` | `load_sibling_kernel` imports `literature-evidence` and `ai-origination-audit`'s kernels by file path so their Europe PMC and ClinicalTrials.gov access isn't duplicated. `search_ctgov_by_condition` fills the condition-search gap those skills don't cover. `trial_eligibility_table` shapes fetched trial records; `biomarkers_table` validates hand-extracted biomarker rows. `write_run` writes all three CSVs plus the README. |
+| `kernel.py` | `load_sibling_kernel` (a thin wrapper over `lib.common.skills`) imports `literature-evidence` and `ai-origination-audit`'s kernels so their Europe PMC and ClinicalTrials.gov access isn't duplicated. `search_ctgov_by_condition` fills the condition-search gap those skills don't cover. `trial_eligibility_table` shapes fetched trial records; `biomarkers_table` validates hand-extracted biomarker rows. `write_run` writes all three CSVs plus the README. |
 | `SKILL.md` | Workflow, principles, and verification steps. |
 
 Module constants: `CTGOV_STUDIES_API`, `TRIAL_ELIGIBILITY_COLUMNS`,

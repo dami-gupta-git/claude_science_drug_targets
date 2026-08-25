@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from lib.common.reporting import write_readme
 
 # Same ClinicalTrials.gov API v2 endpoint ai-origination-audit's CTGOV_API
 # points at. Kept as its own constant here (not imported) because only the
@@ -35,30 +34,25 @@ BIOMARKER_COLUMNS = [
 
 
 def load_sibling_kernel(skill_dir: str):
-    """Dynamically import another skill's kernel.py as <skill_dir>_kernel.
-
-    Skill directories are hyphenated, so they can't be imported as normal
-    Python packages; this loads a sibling kernel.py by file path, the same
-    pattern depmap-ot-fusion uses to reuse depmap-local and open-targets.
-    """
-    import importlib.util
-    import sys
-    here = Path(__file__).resolve().parent
-    kernel_path = here.parent / skill_dir / "kernel.py"
-    module_name = skill_dir.replace("-", "_") + "_kernel"
-    spec = importlib.util.spec_from_file_location(module_name, kernel_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    """Import another skill's kernel.py. See lib.common.skills."""
+    from lib.common.skills import load_sibling_kernel as _load
+    return _load(skill_dir)
 
 
 def search_ctgov_by_condition(condition: str, page_size: int = 100,
                               max_pages: int = None, timeout: int = 60) -> list:
     """NCT ids of studies matching condition, paginated via pageToken.
 
+    Fallback path. Prefer the `clinical-trials` connector's search_trials
+    from a `repl` cell (see SKILL.md): it reports a `total` for the
+    condition, so a run can state what fraction of the cohort it read,
+    which this function cannot.
+
     ai-origination-audit's search_ctgov searches by intervention/sponsor
     only; this fills the condition-search gap it doesn't cover.
+
+    Note this paginates to exhaustion by default. max_pages bounds it;
+    an unbounded call on a common disease walks the whole result set.
     """
     nct_ids = []
     page_token = None
@@ -139,6 +133,7 @@ def write_run(publications_df: pd.DataFrame, studies: dict, biomarker_rows: list
               limits: list = None) -> dict:
     """Write literature_publications.csv, trial_eligibility.csv,
     biomarkers.csv, and README.md into out_dir."""
+    from lib.common.reporting import write_readme
     written = {}
     pubs_path = out_dir / "literature_publications.csv"
     publications_df.to_csv(pubs_path, index=False)

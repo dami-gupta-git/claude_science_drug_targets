@@ -7,7 +7,7 @@ all data files are downloaded manually from depmap.org.
 
 | File | Purpose |
 |---|---|
-| `kernel.py` | All helpers: `depmap_selectivity`, `depmap_lineage_enrichment`, `depmap_mutation_contrast`, `depmap_fusion_contrast`, `depmap_msi_contrast`, `depmap_prism_compounds`, and `write_run`. |
+| `kernel.py` | All helpers: `depmap_selectivity`, `depmap_lineage_enrichment`, `depmap_mutation_contrast`, `depmap_fusion_contrast`, `depmap_msi_contrast`, `depmap_msi_dose_response`, `depmap_msi_dose_bins`, `depmap_prism_compounds`, and `write_run`. |
 | `SKILL.md` | Workflow, interpretation rules, and pitfalls. |
 
 ## Setup

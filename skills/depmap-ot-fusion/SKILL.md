@@ -7,7 +7,7 @@ description: Fuse a DepMap dependency run and an Open Targets run into a per-gen
 
 ## When to use
 
-Use when you have already run (or want to run) both `depmap-local` and `open-targets` for a gene and want a side-by-side view: does the cancer dependency pattern match the disease landscape? Does clinical drug precedent exist? Where do the two sources disagree?
+Use when you have already run (or want to run) both `depmap-local` and `target-evidence` for a gene and want a side-by-side view: does the cancer dependency pattern match the disease landscape? Does clinical drug precedent exist? Where do the two sources disagree?
 
 ## Workflow
 

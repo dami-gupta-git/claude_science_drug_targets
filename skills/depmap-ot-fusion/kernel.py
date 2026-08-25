@@ -6,8 +6,6 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from lib.common.paths import project_root, results_dir
-from lib.common.reporting import write_readme
 
 OT_GRAPHQL_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 OT_DEFAULT_MAX_AGE_DAYS = 90
@@ -175,6 +173,7 @@ def parse_run_timestamp(run_dir):
 
 def find_depmap_run(gene, max_age_days=None, results_base=None):
     """Newest complete DepMap run for gene passing staleness check, or None."""
+    from lib.common.paths import project_root
     base = Path(results_base) if results_base else project_root() / "results"
     gene_dir = base / "depmap_local" / gene.lower()
     if not gene_dir.is_dir():
@@ -203,9 +202,10 @@ def find_open_targets_run(gene, max_age_days=None, results_base=None):
     rejects a non-literal default, and a rejected file defines none of this
     module's helpers.
     """
+    from lib.common.paths import project_root
     max_age_days = OT_DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
     base = Path(results_base) if results_base else project_root() / "results"
-    gene_dir = base / "open_targets" / gene.lower()
+    gene_dir = base / "target_evidence" / gene.lower()
     if not gene_dir.is_dir():
         return None
     candidates = sorted(
@@ -598,6 +598,7 @@ def write_fusion_run(tables, sources, out_dir, gene):
 
 def write_fusion_readme(out_dir, gene, tables, sources):
     """Write README.md with a plain-language intro paragraph and per-section findings."""
+    from lib.common.reporting import write_readme
     import pandas as pd
     from lib.common.reporting import markdown_table
 
@@ -833,6 +834,7 @@ def ensure_depmap_run(gene, reuse=True, max_age_days=None, root=None,
     reuse=True checks for an existing complete run first. dry_run=True reports
     what would be run without executing.
     """
+    from lib.common.paths import results_dir
     if reuse:
         existing = find_depmap_run(gene, max_age_days=max_age_days,
                                    results_base=results_base)
@@ -907,6 +909,7 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
     `max_age_days` defaults to OT_DEFAULT_MAX_AGE_DAYS through an explicit
     None check rather than in the signature; see find_open_targets_run.
     """
+    from lib.common.paths import results_dir
     max_age_days = OT_DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
     if reuse:
         existing = find_open_targets_run(gene, max_age_days=max_age_days,
@@ -915,20 +918,20 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
             return existing
 
     if dry_run:
-        print(f"[dry_run] Would run open-targets for {gene}")
+        print(f"[dry_run] Would run target-evidence for {gene}")
         return None
 
     import importlib.util, sys as _sys, requests, inspect as _inspect
     here = Path(_sys._getframe().f_code.co_filename).resolve().parent
-    kernel_path = here.parent / "open-targets" / "kernel.py"
-    spec = importlib.util.spec_from_file_location("open_targets_kernel", kernel_path)
+    kernel_path = here.parent / "target-evidence" / "kernel.py"
+    spec = importlib.util.spec_from_file_location("target_evidence_kernel", kernel_path)
     ok = importlib.util.module_from_spec(spec)
     _sys.modules[spec.name] = ok
     spec.loader.exec_module(ok)
 
     ensembl_id = resolve_ensembl_id(gene)
 
-    query_path = here.parent / "open-targets" / "query.graphql"
+    query_path = here.parent / "target-evidence" / "query.graphql"
     query = query_path.read_text()
 
     r = requests.post(
@@ -939,7 +942,7 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
     r.raise_for_status()
     data = r.json().get("data", {})
 
-    out = results_dir("open-targets", gene.lower())
+    out = results_dir("target-evidence", gene.lower())
     # ok.write_run additionally requires subject/summary/steps (a README).
     # This sub-run is an internal input to the fusion; its own README is a
     # generic pointer to the fusion output, not an independent finding.
@@ -995,6 +998,7 @@ def run_depmap_ot_fusion(gene, reuse=True, max_age_days=None,
     `max_age_days` defaults to OT_DEFAULT_MAX_AGE_DAYS through an explicit
     None check rather than in the signature; see find_open_targets_run.
     """
+    from lib.common.paths import results_dir
     max_age_days = OT_DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
     gene_upper = gene.upper()
 

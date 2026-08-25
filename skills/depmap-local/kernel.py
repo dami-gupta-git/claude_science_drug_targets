@@ -2,7 +2,6 @@
 import os
 import re
 
-from lib.common.reporting import markdown_table, write_readme
 
 # No repo-relative or machine-specific default: the DepMap release is a manual
 # download (depmap.org sits behind a bot-verification wall) that lands wherever
@@ -516,6 +515,95 @@ def depmap_msi_contrast(gene, root=None, msi_threshold=20.0):
     }])
 
 
+def depmap_msi_scores(root=None):
+    """MSIScore per ModelID from OmicsGlobalSignatures.csv, default entries only."""
+    import pandas as pd
+    root = depmap_root(root)
+    path = os.path.join(root, "OmicsGlobalSignatures.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError("OmicsGlobalSignatures.csv not in %s" % root)
+    sig = pd.read_csv(path)
+    if "IsDefaultEntryForModel" in sig.columns:
+        sig = sig[sig.IsDefaultEntryForModel == "Yes"]
+    return sig.set_index("ModelID")["MSIScore"]
+
+
+def depmap_msi_dose_response(gene, root=None, msi_threshold=20.0):
+    """Is dependency on `gene` graded by MSI burden, or a step at the threshold?
+
+    depmap_msi_contrast() splits lines into MSI-high and MSS and compares two
+    group means, which cannot distinguish a dose-response from a switch. This
+    correlates gene effect against the continuous MSIScore instead, over all
+    lines and again within the MSI-high arm alone. A negative rho within the
+    MSI-high arm means dependency keeps deepening as instability rises, which
+    a two-group contrast cannot show; a flat one means the burden above the
+    threshold carries no further information.
+
+    Spearman, not Pearson: MSIScore is strongly right-skewed (most lines sit
+    near zero), so a rank correlation is the one that answers the question
+    without a transform chosen after seeing the data.
+    """
+    import pandas as pd
+    from scipy import stats
+    eff = depmap_gene_effect(gene, root=root)
+    if gene not in eff.columns:
+        raise KeyError("gene %s not in CRISPR matrix" % gene)
+    j = pd.concat([eff[gene].rename("effect"), depmap_msi_scores(root=root)],
+                  axis=1, join="inner").dropna()
+    rows = []
+    for arm, sub in (("all_lines", j),
+                     ("msi_high_only", j[j.MSIScore >= msi_threshold])):
+        if len(sub) < 3:
+            rows.append({"gene": gene, "arm": arm, "n_lines": int(len(sub)),
+                         "status": "too few lines"})
+            continue
+        rho = stats.spearmanr(sub.MSIScore, sub.effect)
+        rows.append({
+            "gene": gene, "arm": arm, "n_lines": int(len(sub)),
+            "msi_threshold": msi_threshold,
+            "msi_score_min": round(float(sub.MSIScore.min()), 2),
+            "msi_score_max": round(float(sub.MSIScore.max()), 2),
+            "spearman_rho": round(float(rho.statistic), 3),
+            "p_value": floor_pvalue(rho.pvalue),
+            "status": "graded" if (rho.pvalue < 0.05 and rho.statistic < 0)
+                      else "no graded relationship",
+        })
+    return pd.DataFrame(rows)
+
+
+def depmap_msi_dose_bins(gene, root=None, n_bins=5):
+    """Mean gene effect per MSIScore quantile bin - the dose-response curve.
+
+    Companion to depmap_msi_dose_response: the correlation gives one number,
+    this shows the shape, which is what separates a gradient from a step at
+    one score. Bins are quantiles of MSIScore, so each holds a similar number
+    of lines despite the skew; fewer bins are returned when ties collapse
+    quantile edges.
+    """
+    import pandas as pd
+    eff = depmap_gene_effect(gene, root=root)
+    if gene not in eff.columns:
+        raise KeyError("gene %s not in CRISPR matrix" % gene)
+    j = pd.concat([eff[gene].rename("effect"), depmap_msi_scores(root=root)],
+                  axis=1, join="inner").dropna()
+    if len(j) < n_bins:
+        return pd.DataFrame(columns=["gene", "bin", "n_lines"])
+    j["bin"] = pd.qcut(j.MSIScore, q=n_bins, duplicates="drop")
+    rows = []
+    for name, g in j.groupby("bin", observed=True):
+        rows.append({
+            "gene": gene,
+            "bin": str(name),
+            "msi_score_min": round(float(g.MSIScore.min()), 2),
+            "msi_score_max": round(float(g.MSIScore.max()), 2),
+            "n_lines": int(len(g)),
+            "mean_effect": round(float(g.effect.mean()), 3),
+            "median_effect": round(float(g.effect.median()), 3),
+            "frac_dependent": round(float((g.effect < DEP_THRESHOLD).mean()), 3),
+        })
+    return pd.DataFrame(rows)
+
+
 def build_depmap_cache(root=None, verbose=True):
     """Write column-addressable parquet copies of the wide matrices to _cache/.
 
@@ -563,6 +651,7 @@ def write_run(tables, out_dir, subject, summary, steps, source="DepMap",
     tables: dict of {name: DataFrame} — pass whatever analyses were run.
     Returns dict of {name: Path}.
     """
+    from lib.common.reporting import write_readme
     from pathlib import Path
     out_dir = Path(out_dir)
     written = {}

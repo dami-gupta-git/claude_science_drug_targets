@@ -1,6 +1,6 @@
 ---
 name: knowledge-graph
-description: Build and query a persistent gene/disease/drug/lineage graph from open-targets, depmap-local, and literature-evidence run output, and answer path/neighbor questions like how a gene connects to a disease. Use when asked to connect evidence across those skills for a gene, or to trace a path between a gene and a disease/drug.
+description: Build and query a persistent gene/disease/drug/lineage graph from target-evidence, depmap-local, and literature-evidence run output, and answer path/neighbor questions like how a gene connects to a disease. Use when asked to connect evidence across those skills for a gene, or to trace a path between a gene and a disease/drug.
 ---
 
 # Knowledge graph
@@ -9,7 +9,7 @@ description: Build and query a persistent gene/disease/drug/lineage graph from o
 
 - No external API is called. `find_latest_run(skill_domain, subject_snake)`
   locates the newest run under `results/<skill_domain>/<subject>/` for
-  `open_targets`, `depmap_local`, and `literature_evidence` — run those
+  `target_evidence`, `depmap_local`, and `literature_evidence` — run those
   skills first for a gene before syncing it into the graph.
 - `ingest_open_targets` / `ingest_depmap_local` / `ingest_literature_evidence`
   each read one skill's CSVs into `(nodes, edges)` lists.
