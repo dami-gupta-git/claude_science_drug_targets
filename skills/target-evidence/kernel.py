@@ -1,8 +1,8 @@
 """Build a target dossier from Open Targets, gnomAD, cBioPortal, and DepMap.
 
 Open Targets supplies identity, disease associations, drugs, tractability
-and safety; gnomAD supplies population constraint and loss-of-function
-carrier counts; cBioPortal supplies the gene's mutations in tumours
+and safety; gnomAD supplies population constraint, loss-of-function
+carrier counts and common missense variants; cBioPortal supplies the gene's mutations in tumours
 alongside their MSI scores; the MSI dose-response is delegated to
 depmap-local, which owns access to the local DepMap release.
 
@@ -67,6 +67,9 @@ GNOMAD_VARIANT_URL = "https://gnomad.broadinstitute.org/variant/{id}?dataset={da
 # loss-of-function; "LC" calls are annotation artefacts often enough that
 # including them inflates the carrier count.
 GNOMAD_LOF_HIGH_CONFIDENCE = "HC"
+
+# gnomAD's consequence label for a missense variant.
+GNOMAD_MISSENSE_CONSEQUENCE = "missense_variant"
 
 CBIOPORTAL_API_URL = "https://www.cbioportal.org/api"
 CBIOPORTAL_SAMPLE_URL = ("https://www.cbioportal.org/patient?studyId={study}"
@@ -431,47 +434,73 @@ def gnomad_constraint_table(gene: dict) -> pd.DataFrame:
     }])
 
 
-def gnomad_lof_variants_table(gene: dict) -> pd.DataFrame:
-    """One row per high-confidence loss-of-function variant, with carrier counts.
+GNOMAD_VARIANT_COLUMNS = ["variant_id", "reference_genome", "consequence", "hgvsp",
+                          "lof", "lof_filter", "flags", "allele_count",
+                          "allele_number", "allele_frequency", "homozygote_count",
+                          "variant_url"]
+
+
+def gnomad_variant_row(variant: dict, gene: dict) -> dict:
+    """One variant with exome and genome carrier counts pooled.
 
     Exome and genome callsets are separate cohorts in gnomAD, so their allele
     counts are summed and their allele numbers summed alongside - the two
     columns are what the frequency is derived from, and both are kept so a
     reader can see which callset carries the signal.
     """
-    columns = ["variant_id", "reference_genome", "consequence", "hgvsp", "lof",
-               "lof_filter", "flags", "allele_count", "allele_number",
-               "allele_frequency", "homozygote_count", "variant_url"]
-    rows = []
-    for variant in gene.get("variants") or []:
-        if variant.get("lof") != GNOMAD_LOF_HIGH_CONFIDENCE:
-            continue
-        ac = an = hom = 0
-        for callset in ("exome", "genome"):
-            block = variant.get(callset) or {}
-            ac += block.get("ac") or 0
-            an += block.get("an") or 0
-            hom += block.get("homozygote_count") or 0
-        rows.append({
-            "variant_id": variant.get("variant_id"),
-            # variant_id is a build-specific coordinate; carried per row so a
-            # reader who opens only this file can still resolve the position.
-            "reference_genome": gene.get("reference_genome"),
-            "consequence": variant.get("consequence"),
-            "hgvsp": variant.get("hgvsp"),
-            "lof": variant.get("lof"),
-            "lof_filter": variant.get("lof_filter"),
-            "flags": "; ".join(variant.get("flags") or []) or None,
-            "allele_count": ac,
-            "allele_number": an,
-            "allele_frequency": (ac / an) if an else None,
-            "homozygote_count": hom,
-            "variant_url": GNOMAD_VARIANT_URL.format(
-                id=variant.get("variant_id"), dataset=gene.get("dataset")),
-        })
-    out = pd.DataFrame(rows, columns=columns)
+    ac = an = hom = 0
+    for callset in ("exome", "genome"):
+        block = variant.get(callset) or {}
+        ac += block.get("ac") or 0
+        an += block.get("an") or 0
+        hom += block.get("homozygote_count") or 0
+    return {
+        "variant_id": variant.get("variant_id"),
+        # variant_id is a build-specific coordinate; carried per row so a
+        # reader who opens only this file can still resolve the position.
+        "reference_genome": gene.get("reference_genome"),
+        "consequence": variant.get("consequence"),
+        "hgvsp": variant.get("hgvsp"),
+        "lof": variant.get("lof"),
+        "lof_filter": variant.get("lof_filter"),
+        "flags": "; ".join(variant.get("flags") or []) or None,
+        "allele_count": ac,
+        "allele_number": an,
+        "allele_frequency": (ac / an) if an else None,
+        "homozygote_count": hom,
+        "variant_url": GNOMAD_VARIANT_URL.format(
+            id=variant.get("variant_id"), dataset=gene.get("dataset")),
+    }
+
+
+def gnomad_lof_variants_table(gene: dict) -> pd.DataFrame:
+    """One row per high-confidence loss-of-function variant, most carriers first."""
+    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or []
+            if v.get("lof") == GNOMAD_LOF_HIGH_CONFIDENCE]
+    out = pd.DataFrame(rows, columns=GNOMAD_VARIANT_COLUMNS)
     if len(out):
         out = out.sort_values("allele_count", ascending=False).reset_index(drop=True)
+    return out
+
+
+def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> pd.DataFrame:
+    """Missense variants at or above min_allele_frequency, most common first.
+
+    min_allele_frequency is caller-supplied with no default. A common missense
+    variant is a candidate natural experiment (TYK2 P1104A), but gnomAD says
+    only that it is common, not that it changes protein function. A variant
+    whose allele number is zero has no frequency and is excluded.
+    """
+    if not 0 < min_allele_frequency <= 1:
+        raise ValueError("min_allele_frequency must be in (0, 1], got %r"
+                         % min_allele_frequency)
+    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or []
+            if v.get("consequence") == GNOMAD_MISSENSE_CONSEQUENCE]
+    rows = [r for r in rows if r["allele_frequency"] is not None
+            and r["allele_frequency"] >= min_allele_frequency]
+    out = pd.DataFrame(rows, columns=GNOMAD_VARIANT_COLUMNS)
+    if len(out):
+        out = out.sort_values("allele_frequency", ascending=False).reset_index(drop=True)
     return out
 
 
@@ -841,6 +870,7 @@ def msi_dose_response(gene: str, root=None) -> dict:
 def write_run(data: dict, out_dir: Path, subject: str, summary: str,
               steps: list[dict], source: str | None = None,
               limits: list[str] | None = None, gnomad: dict | None = None,
+              missense_min_allele_frequency: float | None = None,
               cbioportal: dict | None = None,
               msi_dose: dict | None = None) -> dict[str, Path]:
     """Write one CSV per table into out_dir, then write README.md.
@@ -849,8 +879,12 @@ def write_run(data: dict, out_dir: Path, subject: str, summary: str,
     record), cbioportal and msi_dose (the dicts their fetch functions return)
     each add their own CSVs when supplied and are silently absent when not:
     depmap-ot-fusion writes an Open Targets-only sub-run through this same
-    function and must not be made to fetch four sources to do it.
+    function and must not be made to fetch four sources to do it. gnomad
+    requires missense_min_allele_frequency, so the missense table cannot be
+    skipped by omission.
     """
+    if gnomad is not None and missense_min_allele_frequency is None:
+        raise ValueError("gnomad was supplied without missense_min_allele_frequency")
     written = {}
     for name, table_fn in (
         ("identity", identity_table),
@@ -877,6 +911,8 @@ def write_run(data: dict, out_dir: Path, subject: str, summary: str,
         tables["gnomad_constraint"] = gnomad_constraint_table(gnomad)
         tables["gnomad_lof_variants"] = gnomad_lof_variants_table(gnomad)
         tables["gnomad_carrier_summary"] = gnomad_carrier_summary_table(gnomad)
+        tables["gnomad_missense_variants"] = gnomad_missense_variants_table(
+            gnomad, missense_min_allele_frequency)
     if cbioportal is not None:
         tables["tumour_mutations"] = cbioportal["mutations"]
         tables["tumour_cohort"] = cbioportal["cohort"]

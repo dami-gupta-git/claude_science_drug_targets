@@ -18,6 +18,8 @@ description: Build a target dossier from four sources - Open Targets (identity, 
 - gnomAD: `fetch_gnomad_gene(symbol)` → pass the record to `write_run`.
   Read `gnomad_constraint_table` for LOEUF and observed-vs-expected LoF,
   and `gnomad_carrier_summary_table` for how many carriers exist.
+  `write_run` also needs `missense_min_allele_frequency`; it has no
+  default, so state the cutoff chosen and why in the findings.
 - cBioPortal: `fetch_cbioportal_msi_cohort(symbol, residue_ranges,
   thresholds=MSI_ATTRIBUTE_THRESHOLDS)`. `residue_ranges` is required and
   caller-supplied - look the domain boundaries up (UniProt or the paper
@@ -62,6 +64,11 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   recessive gene, say explicitly that carrier counts describe
   heterozygotes and that `total_homozygotes` is a floor (see the
   docstring), so no claim of a two-hit frequency rests on it.
+- **Missense variants**: name each common variant by protein change
+  (hgvsp) with its frequency and homozygote count, and state the cutoff.
+  gnomAD shows only that a variant is common, not that it changes
+  function or disease risk; say so, and cite a source for any functional
+  claim. An empty table means no missense variant cleared the cutoff.
 - **Tumour mutations**: a mutation count is only readable against the
   MSI-high sample count in `tumour_cohort.csv` - give both. Report
   variant allele frequency when arguing a variant is clonal or
@@ -88,7 +95,7 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
 
 ## Verify
 
-- Seven Open Targets CSVs land in the run directory, plus two or three
+- Seven Open Targets CSVs land in the run directory, plus two to four
   per supplied section.
 - Every APPROVED drug in `drug_summary.csv` appears in the README drug
   table.
@@ -105,6 +112,8 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   cap loses the tail rather than a random sample, so "the top associations are
   X" is supportable and "the gene is associated with X diseases" is not.
 - `gnomad_lof_variants.csv` contains only `lof == HC` rows.
+- `gnomad_missense_variants.csv` contains only missense rows at or above
+  the stated cutoff.
 - The two gnomAD counts differ and both are correct: `obs_lof` in
   `gnomad_constraint.csv` is the constraint model's count on one canonical
   transcript excluding flagged variants, while `gnomad_lof_variants.csv` keeps

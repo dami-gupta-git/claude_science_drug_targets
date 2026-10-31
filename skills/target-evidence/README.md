@@ -4,8 +4,9 @@ Builds a target dossier from four sources and writes it as CSVs under
 `results/target_evidence/<gene>/`. Open Targets supplies identity, the
 top 20 disease associations, genetic evidence, known drugs and clinical
 status, tractability and safety liabilities. gnomAD supplies
-loss-of-function constraint (LOEUF, observed vs expected LoF) and the
-carrier counts behind it. cBioPortal supplies the gene's mutations in
+loss-of-function constraint (LOEUF, observed vs expected LoF), the
+carrier counts behind it, and missense variants above a caller-supplied
+frequency cutoff. cBioPortal supplies the gene's mutations in
 MSI-high tumour samples with their variant allele frequencies. DepMap,
 through `depmap-local`, supplies the MSI dose-response. Only the Open
 Targets section is required; each other section is written when its data
@@ -13,7 +14,7 @@ is passed to `write_run`.
 
 | File | Purpose |
 |---|---|
-| `kernel.py` | Open Targets table functions (`identity_table`, `associations_table`, `top_association_genetic_scores_table`, `known_drugs_table`, `drug_summary_table`, `tractability_table`, `safety_table`); gnomAD fetch and tables (`fetch_gnomad_gene`, `gnomad_constraint_table`, `gnomad_lof_variants_table`, `gnomad_carrier_summary_table`); cBioPortal fetch and tables (`fetch_cbioportal_msi_cohort` and the per-step functions it composes); `msi_dose_response` delegating to `depmap-local`; `write_run` writes every supplied section plus the README. |
+| `kernel.py` | Open Targets table functions (`identity_table`, `associations_table`, `top_association_genetic_scores_table`, `known_drugs_table`, `drug_summary_table`, `tractability_table`, `safety_table`); gnomAD fetch and tables (`fetch_gnomad_gene`, `gnomad_constraint_table`, `gnomad_lof_variants_table`, `gnomad_carrier_summary_table`, `gnomad_missense_variants_table`); cBioPortal fetch and tables (`fetch_cbioportal_msi_cohort` and the per-step functions it composes); `msi_dose_response` delegating to `depmap-local`; `write_run` writes every supplied section plus the README. |
 | `query.graphql` | The GraphQL query run in the `repl` cell. |
 | `SKILL.md` | Workflow, principles, and verification steps. |
 
@@ -48,7 +49,8 @@ cbio = fetch_cbioportal_msi_cohort(gene, ranges, MSI_ATTRIBUTE_THRESHOLDS,
 
 out = results_dir("target-evidence", gene.lower())
 write_run(data, out, subject, summary, steps,
-          gnomad=gnomad, cbioportal=cbio, msi_dose=msi_dose_response(gene))
+          gnomad=gnomad, missense_min_allele_frequency=min_af,  # caller-chosen, cite it
+          cbioportal=cbio, msi_dose=msi_dose_response(gene))
 ```
 
 ## Sources

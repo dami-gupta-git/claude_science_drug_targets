@@ -404,6 +404,26 @@ def test_gnomad_lof_variants_keeps_high_confidence_only():
     assert table.iloc[0]["homozygote_count"] == 1
 
 
+def test_gnomad_missense_variants_filters_by_frequency():
+    table = kernel.gnomad_missense_variants_table(GNOMAD_GENE, 0.05)
+    assert list(table.variant_id) == ["8-2-G-C"]
+    assert table.iloc[0]["allele_frequency"] == 0.09
+    assert table.iloc[0]["homozygote_count"] == 4
+    assert kernel.gnomad_missense_variants_table(GNOMAD_GENE, 0.1).empty
+
+
+def test_gnomad_missense_variants_rejects_bad_frequency():
+    for bad in (0, -0.01, 1.5):
+        with pytest.raises(ValueError, match="min_allele_frequency"):
+            kernel.gnomad_missense_variants_table(GNOMAD_GENE, bad)
+
+
+def test_write_run_requires_missense_frequency_with_gnomad(tmp_path):
+    with pytest.raises(ValueError, match="missense_min_allele_frequency"):
+        kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.", SAMPLE_STEPS,
+                         gnomad=GNOMAD_GENE)
+
+
 def test_gnomad_carrier_summary():
     row = kernel.gnomad_carrier_summary_table(GNOMAD_GENE).iloc[0]
     assert row["n_lof_variants"] == 1
@@ -474,8 +494,10 @@ def test_write_run_adds_supplied_sections(tmp_path):
                    "n_msi_high_samples": 12, "n_msi_high_mutated": 1,
                    "n_msi_high_in_range": 1}])}
     written = kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.", SAMPLE_STEPS,
-                               gnomad=GNOMAD_GENE, cbioportal=cohort)
+                               gnomad=GNOMAD_GENE, missense_min_allele_frequency=0.05,
+                               cbioportal=cohort)
     assert "gnomad_constraint" in written
+    assert "gnomad_missense_variants" in written
     assert "tumour_cohort" in written
     assert "msi_dose_response" not in written
     for path in written.values():
