@@ -117,7 +117,10 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   associated with, or the table reads as a survey when it is a top slice. The
   cap loses the tail rather than a random sample, so "the top associations are
   X" is supportable and "the gene is associated with X diseases" is not.
-- `gnomad_lof_variants.csv` contains only `lof == HC` rows.
+- `gnomad_lof_variants.csv` contains only `lof == HC` rows, each with a
+  nonzero `allele_count` from QC-passing callsets (see
+  `gnomad_variant_counts`). A variant whose only carriers failed gnomAD QC
+  is absent, not counted.
 - `gnomad_missense_variants.csv` contains only missense rows whose
   `minor_allele_frequency` is at or above the stated cutoff.
 - The two gnomAD counts differ and both are correct: `obs_lof` in

@@ -68,6 +68,9 @@ GNOMAD_VARIANT_URL = "https://gnomad.broadinstitute.org/variant/{id}?dataset={da
 # including them inflates the carrier count.
 GNOMAD_LOF_HIGH_CONFIDENCE = "HC"
 
+# gnomAD's filter for "no high-quality genotype carries this allele".
+GNOMAD_AC0_FILTER = "AC0"
+
 # gnomAD's consequence label for a missense variant.
 GNOMAD_MISSENSE_CONSEQUENCE = "missense_variant"
 
@@ -374,7 +377,9 @@ query Gene($symbol: String!, $referenceGenome: ReferenceGenomeId!, $dataset: Dat
       lof
       lof_filter
       flags
-      joint { ac an homozygote_count }
+      exome { ac an homozygote_count filters }
+      genome { ac an homozygote_count filters }
+      joint { ac an homozygote_count filters }
     }
   }
 }
@@ -440,19 +445,44 @@ def gnomad_constraint_table(gene: dict) -> pd.DataFrame:
 
 
 GNOMAD_VARIANT_COLUMNS = ["variant_id", "reference_genome", "consequence", "hgvsp",
-                          "lof", "lof_filter", "flags", "allele_count",
-                          "allele_number", "allele_frequency", "homozygote_count",
-                          "variant_url"]
+                          "lof", "lof_filter", "flags", "callsets_counted",
+                          "allele_count", "allele_number", "allele_frequency",
+                          "homozygote_count", "variant_url"]
+
+
+def passes_gnomad_qc(block: dict) -> bool:
+    """True when a callset block carries no gnomAD quality filter.
+
+    AC0 is not a quality failure: it says no high-quality genotype carries the
+    allele, so the block still contributes the people called at the site.
+    """
+    return not set(block.get("filters") or []) - {GNOMAD_AC0_FILTER}
+
+
+def gnomad_variant_counts(variant: dict) -> tuple:
+    """(ac, an, homozygotes, callsets) counted only from callsets that passed QC.
+
+    When every callset passes, gnomAD's joint block is used: it keeps the
+    people called in a callset where the variant was not seen. The joint block
+    does not carry exome or genome quality failures (TYK2 19-10352476-A-C fails
+    exome VQSR with a clean joint block), so when a callset fails, only the
+    passing callsets are summed and the failing one is dropped from both the
+    count and the denominator. No passing callset gives all-None counts.
+    """
+    blocks = {c: variant[c] for c in ("exome", "genome") if variant.get(c)}
+    joint = variant.get("joint")
+    if joint and passes_gnomad_qc(joint) and all(map(passes_gnomad_qc, blocks.values())):
+        return joint.get("ac"), joint.get("an"), joint.get("homozygote_count"), "joint"
+    passing = {c: b for c, b in blocks.items() if passes_gnomad_qc(b)}
+    if not passing:
+        return None, None, None, None
+    total = lambda key: sum(b.get(key) or 0 for b in passing.values())
+    return total("ac"), total("an"), total("homozygote_count"), "; ".join(passing)
 
 
 def gnomad_variant_row(variant: dict, gene: dict) -> dict:
-    """One variant with gnomAD's joint (exome plus genome) carrier counts.
-
-    The joint block is gnomAD's own combination of the two callsets. A
-    variant without one has empty counts rather than zeros.
-    """
-    joint = variant.get("joint") or {}
-    ac, an, hom = joint.get("ac"), joint.get("an"), joint.get("homozygote_count")
+    """One variant with its QC-passing carrier counts; see gnomad_variant_counts."""
+    ac, an, hom, callsets = gnomad_variant_counts(variant)
     return {
         "variant_id": variant.get("variant_id"),
         # variant_id is a build-specific coordinate; carried per row so a
@@ -463,6 +493,7 @@ def gnomad_variant_row(variant: dict, gene: dict) -> dict:
         "lof": variant.get("lof"),
         "lof_filter": variant.get("lof_filter"),
         "flags": "; ".join(variant.get("flags") or []) or None,
+        "callsets_counted": callsets,
         "allele_count": ac,
         "allele_number": an,
         "allele_frequency": (ac / an) if an and ac is not None else None,
@@ -472,10 +503,21 @@ def gnomad_variant_row(variant: dict, gene: dict) -> dict:
     }
 
 
+def gnomad_carried_variant_rows(gene: dict, keep) -> list[dict]:
+    """Rows for variants where keep(variant) holds and a QC-passing carrier exists.
+
+    gnomAD lists variants whose every call failed QC or that no high-quality
+    genotype carries (filter AC0); counting them inflates a variant count
+    with alleles nobody is observed to carry.
+    """
+    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or [] if keep(v)]
+    return [r for r in rows if r["allele_count"]]
+
+
 def gnomad_lof_variants_table(gene: dict) -> pd.DataFrame:
-    """One row per high-confidence loss-of-function variant, most carriers first."""
-    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or []
-            if v.get("lof") == GNOMAD_LOF_HIGH_CONFIDENCE]
+    """One row per carried high-confidence loss-of-function variant, most carriers first."""
+    rows = gnomad_carried_variant_rows(
+        gene, lambda v: v.get("lof") == GNOMAD_LOF_HIGH_CONFIDENCE)
     out = pd.DataFrame(rows, columns=GNOMAD_VARIANT_COLUMNS)
     if len(out):
         out = out.sort_values("allele_count", ascending=False).reset_index(drop=True)
@@ -533,11 +575,9 @@ def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> p
         "transcript_id", "minor_allele_frequency", "reference_is_minor",
         "minor_allele_carriers", "minor_allele_carrier_fraction", "variant_url"]
     rows = []
-    for variant in gene.get("variants") or []:
-        if (variant.get("consequence") != GNOMAD_MISSENSE_CONSEQUENCE
-                or variant.get("transcript_id") != canonical):
-            continue
-        row = gnomad_variant_row(variant, gene)
+    for row in gnomad_carried_variant_rows(
+            gene, lambda v: v.get("consequence") == GNOMAD_MISSENSE_CONSEQUENCE
+            and v.get("transcript_id") == canonical):
         af = row["allele_frequency"]
         if af is None or min(af, 1 - af) < min_allele_frequency:
             continue

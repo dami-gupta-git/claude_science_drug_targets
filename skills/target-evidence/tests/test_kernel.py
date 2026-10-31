@@ -466,6 +466,52 @@ def test_write_run_requires_missense_frequency_with_gnomad(tmp_path):
                          gnomad=GNOMAD_GENE)
 
 
+def lof_variant(variant_id, exome=None, genome=None, joint=None):
+    return {"variant_id": variant_id, "consequence": "stop_gained",
+            "transcript_id": "ENST_CANON", "hgvsp": "p.Arg1Ter", "lof": "HC",
+            "lof_filter": None, "flags": [], "exome": exome, "genome": genome,
+            "joint": joint}
+
+
+def test_gnomad_counts_drop_callset_that_failed_qc():
+    variant = lof_variant(
+        "8-6-A-T",
+        exome={"ac": 50, "an": 1000, "homozygote_count": 0, "filters": ["AS_VQSR"]},
+        genome={"ac": 2, "an": 400, "homozygote_count": 0, "filters": []},
+        joint={"ac": 52, "an": 1400, "homozygote_count": 0, "filters": []})
+    row = kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).iloc[0]
+    assert row["callsets_counted"] == "genome"
+    assert row["allele_count"] == 2
+    assert row["allele_number"] == 400
+
+
+def test_gnomad_variant_dropped_when_no_callset_passes_qc():
+    variant = lof_variant(
+        "8-7-A-T",
+        exome={"ac": 164, "an": 1000, "homozygote_count": 0, "filters": ["AS_VQSR"]},
+        joint={"ac": 164, "an": 1400, "homozygote_count": 0, "filters": []})
+    assert kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).empty
+
+
+def test_gnomad_variant_with_no_carriers_dropped():
+    variant = lof_variant(
+        "8-8-A-T",
+        exome={"ac": 0, "an": 1000, "homozygote_count": 0, "filters": ["AC0"]},
+        joint={"ac": 0, "an": 1400, "homozygote_count": 0, "filters": ["AC0"]})
+    assert kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).empty
+
+
+def test_gnomad_ac0_callset_still_counts_toward_denominator():
+    variant = lof_variant(
+        "8-9-A-T",
+        exome={"ac": 0, "an": 1000, "homozygote_count": 0, "filters": ["AC0"]},
+        genome={"ac": 3, "an": 400, "homozygote_count": 0, "filters": []},
+        joint={"ac": 3, "an": 1400, "homozygote_count": 0, "filters": []})
+    row = kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).iloc[0]
+    assert row["callsets_counted"] == "joint"
+    assert row["allele_number"] == 1400
+
+
 def test_gnomad_carrier_summary():
     row = kernel.gnomad_carrier_summary_table(GNOMAD_GENE).iloc[0]
     assert row["n_lof_variants"] == 1
