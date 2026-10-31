@@ -1,6 +1,6 @@
 """Fetch and shape gene literature evidence from the Europe PMC REST API.
 
-kernel.py loads with this skill: approved_name, build_query, search_europepmc,
+kernel.py loads with this skill: build_query, search_europepmc,
 search_balanced, publication_row, publications_table, publication_index,
 normalise_text, verify_claims, claims_table, write_run, and the constants
 EUROPEPMC_SEARCH_URL, EUROPEPMC_ARTICLE_URL, PUBLICATION_COLUMNS,
@@ -91,31 +91,6 @@ DIRECTIONS = {
     "reduced": "the gene's expression or activity is lowered in, or by, the entity",
 }
 
-OPEN_TARGETS_GRAPHQL_URL = "https://api.platform.opentargets.org/api/v4/graphql"
-
-
-def approved_name(symbol: str, timeout: int = 60) -> str:
-    """The gene's approved full name from Open Targets (TYK2 -> "tyrosine kinase 2").
-
-    Raises when no target's approved symbol matches exactly, rather than
-    taking the top search hit, which for a mistyped symbol is another gene.
-    """
-    query = ('query($q:String!){search(queryString:$q,entityNames:["target"],'
-             'page:{index:0,size:10}){hits{object{... on Target{approvedSymbol approvedName}}}}}')
-    request = urllib.request.Request(
-        OPEN_TARGETS_GRAPHQL_URL,
-        data=json.dumps({"query": query, "variables": {"q": symbol}}).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=timeout) as fh:
-        body = json.load(fh)
-    hits = (((body.get("data") or {}).get("search") or {}).get("hits")) or []
-    for hit in hits:
-        target = hit.get("object") or {}
-        if (target.get("approvedSymbol") or "").upper() == symbol.upper():
-            return target["approvedName"]
-    raise ValueError("Open Targets has no target with approved symbol %r" % symbol)
-
-
 def build_query(gene: str, extra_terms: str | None = None,
                 include_preprints: bool = True,
                 title_only: bool = False,
@@ -129,7 +104,7 @@ def build_query(gene: str, extra_terms: str | None = None,
     symbol is (TP53 papers mostly say p53; MAP3K13 papers say LZK). context
     words, when given, must appear in the abstract: they narrow a symbol
     that is also an ordinary word (PELO is Portuguese for "by the"). Both
-    come from the "Choose search terms" step in SKILL.md.
+    come from the literature-search-terms skill.
 
     extra_terms, if given, is AND-ed onto the gene term as free text
     (e.g. "drug target", "biomarker") to narrow a broad symbol. Europe PMC
@@ -313,7 +288,7 @@ def retrieval_record(hits, passes, retrieved_at, search_terms=None):
     without the caller having to remember what it asked for. Access it by
     key:
 
-        result = search_balanced("WRN", approved_name("WRN"))
+        result = search_balanced("WRN", latest_search_terms("WRN"))
         hits = result["hits"]
 
     Note it is not a 2-tuple: an earlier version of this docstring showed
@@ -324,9 +299,7 @@ def retrieval_record(hits, passes, retrieved_at, search_terms=None):
             "search_terms": search_terms}
 
 
-def search_balanced(gene: str, full_name: str | None,
-                    aliases: list[str] | None = None,
-                    context: list[str] | None = None,
+def search_balanced(gene: str, search_terms: dict,
                     extra_terms: str | None = None,
                     recent: int = 20, landmark: int = 15,
                     established: int = 15, established_years: int = 5,
@@ -336,10 +309,11 @@ def search_balanced(gene: str, full_name: str | None,
     """Records from three passes - newest first, most cited, and most cited
     per year in the last established_years years - merged.
 
-    full_name is required (approved_name gives it) and may be None only for
-    a gene with no full name; omitting it loses papers whose title spells
-    the gene out. aliases and context apply to every pass and are recorded
-    in retrieval.json; see build_query.
+    search_terms is the record the literature-search-terms skill writes
+    (its latest_search_terms reads it): the gene's full_name, aliases and
+    context. Without the full name, papers whose title spells the gene out
+    are missed. The terms apply to every pass and are recorded in
+    retrieval.json; see build_query.
 
     Returns a dict with keys hits, passes and retrieved_at (see
     retrieval_record); hand the whole dict to write_run, which writes it to
@@ -388,7 +362,12 @@ def search_balanced(gene: str, full_name: str | None,
     infos = []
     this_year = datetime.date.today().year
     window = (this_year - established_years + 1, this_year)
-    terms = {"aliases": aliases, "context": context}
+    if (search_terms.get("gene") or "").upper() != gene.upper():
+        raise ValueError("search_terms are for %r, not %r"
+                         % (search_terms.get("gene"), gene))
+    full_name = search_terms.get("full_name")
+    terms = {"aliases": search_terms.get("aliases") or None,
+             "context": search_terms.get("context") or None}
     passes = (
         ("recent", build_query(gene, extra_terms, include_preprints, **terms),
          None, recent, None),
@@ -420,8 +399,7 @@ def search_balanced(gene: str, full_name: str | None,
                 hit["retrieval_pass"] = label
                 out[key] = hit
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    return retrieval_record(list(out.values()), infos, stamp,
-                            {"full_name": full_name, **terms})
+    return retrieval_record(list(out.values()), infos, stamp, search_terms)
 
 
 # --- text normalisation and verbatim checking -------------------------

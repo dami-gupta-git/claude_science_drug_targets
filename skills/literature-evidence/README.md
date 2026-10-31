@@ -20,10 +20,13 @@ Module constants: `EUROPEPMC_SEARCH_URL`, `EUROPEPMC_ARTICLE_URL`,
 
 ```python
 from lib.common.paths import results_dir
-from kernel import build_query, search_europepmc, write_run
+from lib.common.skills import load_sibling_kernel
+from kernel import search_balanced, write_run
 
-query = build_query(gene)  # add include_preprints=False to skip bioRxiv/medRxiv
-hits = search_europepmc(query)
+# run the literature-search-terms skill for the gene first
+terms = load_sibling_kernel("literature-search-terms").latest_search_terms(gene)
+retrieval = search_balanced(gene, terms)
+hits = retrieval["hits"]
 
 # read hits' abstracts, then build claim_rows by hand:
 claim_rows = [
@@ -33,5 +36,5 @@ claim_rows = [
 ]
 
 out = results_dir("literature-evidence", gene.lower())
-write_run(hits, claim_rows, out, gene, summary, steps)
+write_run(hits, claim_rows, out, gene, summary, steps, retrieval=retrieval)
 ```

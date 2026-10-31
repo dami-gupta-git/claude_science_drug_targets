@@ -7,27 +7,17 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
 
 ## Workflow
 
-- **Choose search terms** before searching, from the symbol and
-  `approved_name(gene)` only — no further lookup:
-  - `aliases`: other names papers put in titles for this gene (TP53 →
-    `["p53"]`, MAP3K13 → `["LZK"]`). Leave empty if the symbol is what
-    the field uses. Never a name shared with another gene.
-  - `context`: only if the symbol is also an ordinary word or another
-    gene's name — 2-4 words a real paper's abstract would contain (PELO →
-    `["ribosome", "mRNA", "Hbs1", "Dom34"]`). Otherwise leave empty; it
-    narrows every pass.
-  - Pass both to `search_balanced`; they are recorded in `retrieval.json`.
-    State them and why in the Retrieval finding.
-- `search_balanced(gene, approved_name(gene), aliases=..., context=...)` is the default entry point
-  for a dossier — network calls, run in the `python` cell directly (Europe
-  PMC and Open Targets are plain web APIs, no MCP connector needed). It
-  returns a dict, not a tuple: `hits = retrieval["hits"]`. Pass `retrieval`
-  to `write_run`. Narrow a broad symbol with `extra_terms` (e.g.
-  `"drug target"`, `"biomarker"`) rather than requesting more records.
-- Always pass the full name from `approved_name`, never a hand-typed one.
-  Omitting it misses papers whose title spells the gene out; see
-  `build_query` for why a full-name title match also needs the symbol in
-  the abstract.
+- Run the `literature-search-terms` skill for the gene first. Then
+  `terms = load_sibling_kernel("literature-search-terms").latest_search_terms(gene)`
+  (`lib.common.skills`). Never hand-write the terms dict.
+- `retrieval = search_balanced(gene, terms)` is the default entry point
+  for a dossier — network call, run in the `python` cell directly (Europe
+  PMC is a plain REST API, no MCP connector needed). It returns a dict,
+  not a tuple: `hits = retrieval["hits"]`. Pass `retrieval` to
+  `write_run`; the terms are recorded in `retrieval.json`. State them and
+  their reasons in the Retrieval finding. Narrow a broad symbol with
+  `extra_terms` (e.g. `"drug target"`, `"biomarker"`) rather than
+  requesting more records.
 - Three passes run: `recent` (newest first), `landmark` (most cited ever,
   title match) and `established` (most cited per year in the last
   `established_years` years, re-ranked from a larger candidate pool). See

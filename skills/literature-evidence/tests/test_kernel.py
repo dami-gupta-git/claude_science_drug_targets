@@ -35,6 +35,12 @@ HIT_PPR = {
 }
 
 
+def terms(gene, full_name, aliases=(), context=()):
+    """A search_terms record as literature-search-terms writes it."""
+    return {"gene": gene, "full_name": full_name, "aliases": list(aliases),
+            "context": list(context), "reasons": {}}
+
+
 def test_build_query_plain():
     q = kernel.build_query("WRN")
     assert 'TITLE:"WRN"' in q
@@ -86,9 +92,17 @@ def test_build_query_context_requires_an_abstract_word():
 
 def test_search_balanced_records_search_terms(monkeypatch):
     monkeypatch.setattr(kernel, "search_europepmc", lambda *a, **k: [])
-    r = kernel.search_balanced("PELO", "pelota", aliases=["pelota"], context=["ribosome"])
-    assert r["search_terms"] == {"full_name": "pelota", "aliases": ["pelota"],
-                                 "context": ["ribosome"]}
+    pelo = terms("PELO", "pelota factor", aliases=["pelota"], context=["ribosome"])
+    r = kernel.search_balanced("PELO", pelo)
+    assert r["search_terms"] == pelo
+    assert all('ABSTRACT:"ribosome"' in p["query"] for p in r["passes"])
+    assert all('TITLE:"pelota"' in p["query"] for p in r["passes"])
+
+
+def test_search_balanced_rejects_terms_for_another_gene(monkeypatch):
+    monkeypatch.setattr(kernel, "search_europepmc", lambda *a, **k: [])
+    with pytest.raises(ValueError, match="not 'TYK2'"):
+        kernel.search_balanced("TYK2", terms("PELO", None))
 
 
 def test_build_query_rejects_quote_in_full_name():
@@ -104,7 +118,7 @@ def test_search_balanced_runs_three_passes_and_joins_labels(monkeypatch):
         return [dict(HIT_MED)] if sort == kernel.SORT_CITED else []
 
     monkeypatch.setattr(kernel, "search_europepmc", fake_search)
-    result = kernel.search_balanced("TYK2", "tyrosine kinase 2", established_years=5)
+    result = kernel.search_balanced("TYK2", terms("TYK2", "tyrosine kinase 2"), established_years=5)
     assert [p["label"] for p in result["passes"]] == ["recent", "landmark", "established"]
     assert "PUB_YEAR:[" in calls[2][0]
     assert 'TITLE:"tyrosine kinase 2"' in calls[1][0]
@@ -125,7 +139,7 @@ def test_established_pass_reranks_by_citations_per_year(monkeypatch):
         return [dict(undated), dict(old), dict(new)]
 
     monkeypatch.setattr(kernel, "search_europepmc", fake_search)
-    result = kernel.search_balanced("TYK2", None, established=2, established_pool=50)
+    result = kernel.search_balanced("TYK2", terms("TYK2", None), established=2, established_pool=50)
     assert pools == [50]
     assert [h["id"] for h in result["hits"]] == ["2", "1"]
     assert result["passes"][-1]["reranked_from"] == 50
@@ -135,24 +149,6 @@ def test_citations_per_year_missing_values():
     assert kernel.citations_per_year({"citedByCount": None, "pubYear": "2020"}, 2026) is None
     assert kernel.citations_per_year({"citedByCount": 12, "pubYear": "2026"}, 2026) == 12
 
-
-def test_approved_name_requires_exact_symbol(monkeypatch):
-    class Response:
-        def __init__(self, body):
-            self.body = body
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            return False
-        def read(self):
-            return self.body
-
-    body = (b'{"data":{"search":{"hits":[{"object":{"approvedSymbol":"TYK2",'
-            b'"approvedName":"tyrosine kinase 2"}}]}}}')
-    monkeypatch.setattr(kernel.urllib.request, "urlopen", lambda *a, **k: Response(body))
-    assert kernel.approved_name("tyk2") == "tyrosine kinase 2"
-    with pytest.raises(ValueError, match="no target"):
-        kernel.approved_name("TYK3")
 
 
 def test_publication_row_maps_fields():

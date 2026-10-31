@@ -13,6 +13,7 @@ CSVs plus a findings README.
 | [`skills/depmap-ot-fusion`](skills/depmap-ot-fusion/SKILL.md) | Fuses a DepMap dependency run and an Open Targets run into a per-gene dossier: verdict, conflicts between sources, disease-lineage alignment, and a drug join table. |
 | [`skills/ai-origination-audit`](skills/ai-origination-audit/SKILL.md) | Audits how much of a drug candidate's discovery was actually done by AI, tiering claims against clinical trial registry evidence with provenance. |
 | [`skills/literature-evidence`](skills/literature-evidence/README.md) | Searches Europe PMC (including bioRxiv/medRxiv preprints) for a gene's literature and extracts disease-association, interaction, mechanism, and biomarker claims with a source quote and PMID for each. |
+| [`skills/literature-search-terms`](skills/literature-search-terms/README.md) | Chooses the other names and context words `literature-evidence` searches with for a gene, from its symbol and approved name, and saves them with a reason for each. Run before `literature-evidence`. |
 | [`skills/multi-omics-expression`](skills/multi-omics-expression/README.md) | Median gene expression across GTEx normal tissues and a fixed set of major TCGA cancer types (via cBioPortal), flagging markedly over- or under-expressed tissues/cancer types. |
 | [`skills/biomarker-stratification`](skills/biomarker-stratification/SKILL.md) | Biomarkers used to select or stratify patients in a disease's clinical trials, from ClinicalTrials.gov eligibility criteria and Europe PMC literature. Scoped by disease, not gene. |
 | [`skills/knowledge-graph`](skills/knowledge-graph/README.md) | Persistent gene/disease/drug/lineage graph assembled from `target-evidence`, `depmap-local`, and `literature-evidence` run output; answers path/neighbor queries. |
@@ -20,9 +21,9 @@ CSVs plus a findings README.
 
 ## Workflow
 
-Ten live skills (plus `open-targets`, which is stale). Which apply depends on what you're starting from:
+Eleven live skills (plus `open-targets`, which is stale). Which apply depends on what you're starting from:
 
-- Start from a gene — `target-evidence`, `depmap-local`, `literature-evidence`, `multi-omics-expression`, `depmap-ot-fusion`
+- Start from a gene — `target-evidence`, `depmap-local`, `literature-search-terms` then `literature-evidence`, `multi-omics-expression`, `depmap-ot-fusion`
 - Start from a drug — `clinical-trials`, `ai-origination-audit`
 - Start from a disease — `biomarker-stratification`
 - Across runs — `knowledge-graph`, and `docs-style` for anything written
@@ -31,7 +32,7 @@ Ten live skills (plus `open-targets`, which is stale). Which apply depends on wh
 
 1. **`target-evidence`** — run this first, always. It's the broadest single call: identity, whether the protein is chemically druggable, whether losing it is survivable in the population, whether resistance mutations already exist in tumours, and whether the dependency is graded or a threshold. If the answer here is discouraging, stop — one run is enough to know.
 2. **`depmap-local`** — the fuller dependency picture. `target-evidence` borrows only the dose-response from it, so this adds which cancer lineages depend on the gene, the mismatch-repair contrast, and whether any existing compound hits it. Run it when step 1 shows a dependency worth characterising.
-3. **`literature-evidence`** — what the field already claims, with a quoted sentence and a PMID behind each claim. Run this before forming a view of your own; it's how you find out the result was published in 2019.
+3. **`literature-search-terms`, then `literature-evidence`** — what the field already claims, with a quoted sentence and a PMID behind each claim. Run this before forming a view of your own; it's how you find out the result was published in 2019. The first skill picks the names to search; without it, a gene known by another name (TP53 as p53) or a symbol that is also an ordinary word (PELO) gets the wrong papers.
 4. **`multi-omics-expression`** — a cheap sanity check: is the gene even expressed in the tissues where the dependency showed up. Fast, and occasionally contradicts steps 2 and 3.
 5. **`depmap-ot-fusion`** — reconciles the dependency and Open Targets views and reports where they disagree. It reuses the runs from steps 1 and 2 rather than refetching, so it only makes sense after them.
 6. **`knowledge-graph`** — connects the runs so you can ask which of your genes share a disease. Worth it once you have several genes; for a single gene the individual runs are simpler.
@@ -46,7 +47,7 @@ Ten live skills (plus `open-targets`, which is stale). Which apply depends on wh
 
 - `biomarker-stratification` is the one skill in the suite that hasn't actually been run. Its code was read and fixed, but the recommendation above rests on its documentation rather than on observed output.
 - For `knowledge-graph`, the existing store was read and repaired, but never freshly synced. The store on disk predates the `support_p` fix, so the query functions will now refuse it by design — it needs re-ingesting from the source runs before path queries will work.
-- `target-evidence` needs `DEPMAP_ROOT` set for its dose-response section, and `literature-evidence` should be called through `search_balanced` rather than the single-pass search, or it returns only recent papers.
+- `target-evidence` needs `DEPMAP_ROOT` set for its dose-response section, and `literature-evidence` should be called through `search_balanced` with terms from `literature-search-terms` rather than the single-pass search, or it returns only recent papers.
 
 ## Setup
 
