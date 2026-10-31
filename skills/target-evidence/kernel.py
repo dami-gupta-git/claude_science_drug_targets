@@ -377,9 +377,9 @@ query Gene($symbol: String!, $referenceGenome: ReferenceGenomeId!, $dataset: Dat
       lof
       lof_filter
       flags
-      exome { ac an homozygote_count filters }
-      genome { ac an homozygote_count filters }
-      joint { ac an homozygote_count filters }
+      exome { ac an homozygote_count hemizygote_count filters }
+      genome { ac an homozygote_count hemizygote_count filters }
+      joint { ac an homozygote_count hemizygote_count filters }
     }
   }
 }
@@ -444,10 +444,11 @@ def gnomad_constraint_table(gene: dict) -> pd.DataFrame:
     }])
 
 
-GNOMAD_VARIANT_COLUMNS = ["variant_id", "reference_genome", "consequence", "hgvsp",
+GNOMAD_VARIANT_COLUMNS = ["variant_id", "reference_genome", "transcript_id",
+                          "consequence", "hgvsp",
                           "lof", "lof_filter", "flags", "callsets_counted",
                           "allele_count", "allele_number", "allele_frequency",
-                          "homozygote_count", "variant_url"]
+                          "homozygote_count", "hemizygote_count", "variant_url"]
 
 
 def passes_gnomad_qc(block: dict) -> bool:
@@ -459,8 +460,12 @@ def passes_gnomad_qc(block: dict) -> bool:
     return not set(block.get("filters") or []) - {GNOMAD_AC0_FILTER}
 
 
+GNOMAD_COUNT_KEYS = ("ac", "an", "homozygote_count", "hemizygote_count")
+
+
 def gnomad_variant_counts(variant: dict) -> tuple:
-    """(ac, an, homozygotes, callsets) counted only from callsets that passed QC.
+    """(counts, callsets) from callsets that passed QC; counts is keyed by
+    GNOMAD_COUNT_KEYS.
 
     When every callset passes, gnomAD's joint block is used: it keeps the
     people called in a callset where the variant was not seen. The joint block
@@ -472,22 +477,24 @@ def gnomad_variant_counts(variant: dict) -> tuple:
     blocks = {c: variant[c] for c in ("exome", "genome") if variant.get(c)}
     joint = variant.get("joint")
     if joint and passes_gnomad_qc(joint) and all(map(passes_gnomad_qc, blocks.values())):
-        return joint.get("ac"), joint.get("an"), joint.get("homozygote_count"), "joint"
+        return {k: joint.get(k) for k in GNOMAD_COUNT_KEYS}, "joint"
     passing = {c: b for c, b in blocks.items() if passes_gnomad_qc(b)}
     if not passing:
-        return None, None, None, None
-    total = lambda key: sum(b.get(key) or 0 for b in passing.values())
-    return total("ac"), total("an"), total("homozygote_count"), "; ".join(passing)
+        return {k: None for k in GNOMAD_COUNT_KEYS}, None
+    return ({k: sum(b.get(k) or 0 for b in passing.values()) for k in GNOMAD_COUNT_KEYS},
+            "; ".join(passing))
 
 
 def gnomad_variant_row(variant: dict, gene: dict) -> dict:
     """One variant with its QC-passing carrier counts; see gnomad_variant_counts."""
-    ac, an, hom, callsets = gnomad_variant_counts(variant)
+    counts, callsets = gnomad_variant_counts(variant)
+    ac, an = counts["ac"], counts["an"]
     return {
         "variant_id": variant.get("variant_id"),
         # variant_id is a build-specific coordinate; carried per row so a
         # reader who opens only this file can still resolve the position.
         "reference_genome": gene.get("reference_genome"),
+        "transcript_id": variant.get("transcript_id"),
         "consequence": variant.get("consequence"),
         "hgvsp": variant.get("hgvsp"),
         "lof": variant.get("lof"),
@@ -497,25 +504,42 @@ def gnomad_variant_row(variant: dict, gene: dict) -> dict:
         "allele_count": ac,
         "allele_number": an,
         "allele_frequency": (ac / an) if an and ac is not None else None,
-        "homozygote_count": hom,
+        "homozygote_count": counts["homozygote_count"],
+        "hemizygote_count": counts["hemizygote_count"],
         "variant_url": GNOMAD_VARIANT_URL.format(
             id=variant.get("variant_id"), dataset=gene.get("dataset")),
     }
 
 
 def gnomad_carried_variant_rows(gene: dict, keep) -> list[dict]:
-    """Rows for variants where keep(variant) holds and a QC-passing carrier exists.
+    """Rows for canonical-transcript variants where keep(variant) holds and a
+    QC-passing carrier exists.
 
-    gnomAD lists variants whose every call failed QC or that no high-quality
-    genotype carries (filter AC0); counting them inflates a variant count
-    with alleles nobody is observed to carry.
+    gnomAD reports each variant's consequence on one transcript. A row is kept
+    only when that is the gene's canonical transcript: a frameshift or missense
+    change in a minor isoform leaves the canonical protein intact, so counting
+    it would call a person with a working copy a carrier of loss or change.
+    gnomAD's consequence_in_canonical_transcript flag is null on this
+    endpoint, so transcript_id is compared instead.
+
+    gnomAD also lists variants whose every call failed QC or that no
+    high-quality genotype carries (filter AC0); counting them inflates a
+    variant count with alleles nobody is observed to carry.
     """
-    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or [] if keep(v)]
+    canonical = gene.get("canonical_transcript_id")
+    if not canonical:
+        raise ValueError("gnomAD gave no canonical transcript for %s"
+                         % gene.get("symbol"))
+    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or []
+            if v.get("transcript_id") == canonical and keep(v)]
     return [r for r in rows if r["allele_count"]]
 
 
 def gnomad_lof_variants_table(gene: dict) -> pd.DataFrame:
-    """One row per carried high-confidence loss-of-function variant, most carriers first."""
+    """One row per carried high-confidence loss-of-function variant in the
+    canonical transcript, most carriers first. Variants LOFTEE flags but still
+    calls HC are kept, marked in the flags column; the constraint model
+    excludes them, so its obs_lof is lower."""
     rows = gnomad_carried_variant_rows(
         gene, lambda v: v.get("lof") == GNOMAD_LOF_HIGH_CONFIDENCE)
     out = pd.DataFrame(rows, columns=GNOMAD_VARIANT_COLUMNS)
@@ -544,17 +568,11 @@ def minor_allele_carriers(row: dict, chrom: str) -> int | None:
 
 def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> pd.DataFrame:
     """Missense variants in the canonical transcript whose minor allele frequency
-    is at least the cutoff.
+    is at least the cutoff; hgvsp is therefore in canonical numbering.
 
     min_allele_frequency is caller-supplied with no default. A common missense
     variant is a candidate natural experiment (TYK2 P1104A), but gnomAD says
     only that it is common, not that it changes protein function.
-
-    gnomAD reports each variant's consequence on one transcript; a row is kept
-    only when that is the gene's canonical transcript, so hgvsp is in canonical
-    numbering and a change to a minor isoform is not listed as a change to the
-    protein. gnomAD's consequence_in_canonical_transcript flag is null on this
-    endpoint, so transcript_id is compared instead.
 
     The cutoff applies to the minor allele, min(AF, 1 - AF). Where the
     reference genome carries the rarer allele (PELO L221M, AF 0.91), the
@@ -567,21 +585,15 @@ def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> p
     if not 0 < min_allele_frequency <= 0.5:
         raise ValueError("min_allele_frequency is a minor allele frequency and "
                          "must be in (0, 0.5], got %r" % min_allele_frequency)
-    canonical = gene.get("canonical_transcript_id")
-    if not canonical:
-        raise ValueError("gnomAD gave no canonical transcript for %s"
-                         % gene.get("symbol"))
     columns = GNOMAD_VARIANT_COLUMNS[:-1] + [
-        "transcript_id", "minor_allele_frequency", "reference_is_minor",
+        "minor_allele_frequency", "reference_is_minor",
         "minor_allele_carriers", "minor_allele_carrier_fraction", "variant_url"]
     rows = []
     for row in gnomad_carried_variant_rows(
-            gene, lambda v: v.get("consequence") == GNOMAD_MISSENSE_CONSEQUENCE
-            and v.get("transcript_id") == canonical):
+            gene, lambda v: v.get("consequence") == GNOMAD_MISSENSE_CONSEQUENCE):
         af = row["allele_frequency"]
         if af is None or min(af, 1 - af) < min_allele_frequency:
             continue
-        row["transcript_id"] = canonical
         row["minor_allele_frequency"] = min(af, 1 - af)
         row["reference_is_minor"] = af > 0.5
         carriers = minor_allele_carriers(row, gene.get("chrom"))
@@ -596,32 +608,31 @@ def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> p
 
 
 def gnomad_carrier_summary_table(gene: dict) -> pd.DataFrame:
-    """One row: how many people carry a loss-of-function allele, and how many two.
+    """One row: how many people carry a loss-of-function allele, and how many
+    have no working copy.
 
     homozygote_count is per variant, so total_homozygotes counts people
     homozygous for one LoF variant and misses compound heterozygotes, who
     carry two different LoF alleles. It is a floor on the two-hit count, not
-    an estimate of it.
+    an estimate of it. total_hemizygotes counts XY people with one LoF allele
+    on X or Y, who have no working copy from a single hit; gnomAD records it
+    as 0 on the autosomes.
     """
     variants = gnomad_lof_variants_table(gene)
     constraint = gene.get("gnomad_constraint") or {}
-    if variants.empty:
-        return pd.DataFrame([{
-            "symbol": gene.get("symbol"), "dataset": gene.get("dataset"),
-        "reference_genome": gene.get("reference_genome"),
-            "n_lof_variants": 0, "total_lof_allele_count": 0,
-            "total_homozygotes": 0, "max_allele_frequency": None,
-            "loeuf": constraint.get("oe_lof_upper"),
-        }])
     return pd.DataFrame([{
         "symbol": gene.get("symbol"),
         "dataset": gene.get("dataset"),
         "reference_genome": gene.get("reference_genome"),
+        "chrom": gene.get("chrom"),
         "n_lof_variants": int(len(variants)),
         "total_lof_allele_count": int(variants.allele_count.sum()),
         "total_homozygotes": int(variants.homozygote_count.sum()),
-        "max_allele_frequency": float(variants.allele_frequency.max()),
-        "most_common_lof_variant": variants.iloc[0]["variant_id"],
+        "total_hemizygotes": int(variants.hemizygote_count.sum()),
+        "max_allele_frequency": (float(variants.allele_frequency.max())
+                                 if len(variants) else None),
+        "most_common_lof_variant": (variants.iloc[0]["variant_id"]
+                                    if len(variants) else None),
         "loeuf": constraint.get("oe_lof_upper"),
     }])
 

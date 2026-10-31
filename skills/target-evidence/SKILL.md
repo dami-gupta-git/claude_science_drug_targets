@@ -35,7 +35,16 @@ description: Build a target dossier from four sources - Open Targets (identity, 
 
 ## Writing findings
 
-Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
+Follow the prose-vs-tables rule in `docs-style`.
+
+- Each section states its finding in one or two sentences, plus the one
+  definition the reader needs to read its table (a score scale, a
+  cutoff). Method caveats go in Limits, once each, never in a section
+  body: the association cap, the genetic-score slice, salt folding, the
+  approved-tier merge, why the two LoF counts differ, ancestry pooling
+  and the genome build.
+
+Source-specific guidance:
 
 - **Associations**: put scores in a table (disease, score), not in prose.
   Name the top diseases; do not summarise as a count. The finding must
@@ -63,9 +72,11 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   State the scale, then give observed and expected LoF counts. For a
   recessive gene, say explicitly that carrier counts describe
   heterozygotes and that `total_homozygotes` is a floor (see the
-  docstring), so no claim of a two-hit frequency rests on it.
+  docstring), so no claim of a two-hit frequency rests on it. For an X
+  or Y gene, also give `total_hemizygotes`: those XY people have no
+  working copy from a single LoF allele.
 - **Missense variants**: name each common variant by protein change
-  (hgvsp) with its frequency and homozygote count, and state the cutoff.
+  (hgvsp) with its carrier share and homozygote count, and state the cutoff.
   gnomAD shows only that a variant is common, not that it changes
   function or disease risk; say so, and cite a source for any functional
   claim. An empty table means no missense variant cleared the cutoff.
@@ -117,17 +128,18 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   associated with, or the table reads as a survey when it is a top slice. The
   cap loses the tail rather than a random sample, so "the top associations are
   X" is supportable and "the gene is associated with X diseases" is not.
-- `gnomad_lof_variants.csv` contains only `lof == HC` rows, each with a
+- Both gnomAD variant tables hold only canonical-transcript rows with a
   nonzero `allele_count` from QC-passing callsets (see
-  `gnomad_variant_counts`). A variant whose only carriers failed gnomAD QC
-  is absent, not counted.
+  `gnomad_carried_variant_rows`); `transcript_id` matches the gene's
+  canonical transcript on every row.
+- `gnomad_lof_variants.csv` contains only `lof == HC` rows.
 - `gnomad_missense_variants.csv` contains only missense rows whose
   `minor_allele_frequency` is at or above the stated cutoff.
-- The two gnomAD counts differ and both are correct: `obs_lof` in
-  `gnomad_constraint.csv` is the constraint model's count on one canonical
-  transcript excluding flagged variants, while `gnomad_lof_variants.csv` keeps
-  every high-confidence call across the gene. Say which you mean when quoting
-  one; adjacent in a sentence they read as a contradiction. Both tables carry
+- The two gnomAD LoF counts differ and both are correct: `obs_lof` in
+  `gnomad_constraint.csv` is the constraint model's count, which also
+  excludes variants LOFTEE flags, while `gnomad_lof_variants.csv` keeps
+  flagged HC calls and marks them in `flags`. Say which you mean when
+  quoting one; adjacent in a sentence they read as a contradiction. Both tables carry
   `reference_genome`, and variant ids are coordinates on that build — state it,
   because the same id means a different position on another assembly.
 - When the question is "is residue X mutated in these tumours", pass

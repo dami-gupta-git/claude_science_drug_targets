@@ -322,6 +322,11 @@ def test_markdown_table_formats_floats():
     assert "| 2.08e-11 | 0.82 | 17.36 | True |" in out
 
 
+def test_markdown_table_renders_missing_as_empty():
+    rows = [{"a": float("nan"), "b": None, "c": 0.0}]
+    assert "|  |  | 0.0 |" in kernel.markdown_table(rows)
+
+
 def test_write_run(tmp_path):
     written = kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.", SAMPLE_STEPS)
     assert set(written) == {
@@ -501,6 +506,18 @@ def test_gnomad_variant_with_no_carriers_dropped():
     assert kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).empty
 
 
+def test_gnomad_lof_in_minor_isoform_excluded():
+    variant = {**lof_variant(
+        "8-10-A-T", joint={"ac": 9, "an": 1400, "homozygote_count": 0, "filters": []}),
+        "transcript_id": "ENST_ALT"}
+    assert kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).empty
+
+
+def test_gnomad_lof_raises_without_canonical_transcript():
+    with pytest.raises(ValueError, match="canonical transcript"):
+        kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "canonical_transcript_id": None})
+
+
 def test_gnomad_ac0_callset_still_counts_toward_denominator():
     variant = lof_variant(
         "8-9-A-T",
@@ -510,6 +527,16 @@ def test_gnomad_ac0_callset_still_counts_toward_denominator():
     row = kernel.gnomad_lof_variants_table({**GNOMAD_GENE, "variants": [variant]}).iloc[0]
     assert row["callsets_counted"] == "joint"
     assert row["allele_number"] == 1400
+
+
+def test_gnomad_carrier_summary_counts_hemizygotes_on_x():
+    variant = lof_variant(
+        "X-1-A-T", joint={"ac": 5, "an": 1200, "homozygote_count": 0,
+                          "hemizygote_count": 3, "filters": []})
+    row = kernel.gnomad_carrier_summary_table(
+        {**GNOMAD_GENE, "chrom": "X", "variants": [variant]}).iloc[0]
+    assert row["total_homozygotes"] == 0
+    assert row["total_hemizygotes"] == 3
 
 
 def test_gnomad_carrier_summary():

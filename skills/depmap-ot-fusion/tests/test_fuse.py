@@ -95,10 +95,10 @@ def test_find_depmap_run_missing_gene(results_tree):
     assert kernel.find_depmap_run("unknown_gene", results_base=results_tree) is None
 
 
-def test_find_ot_run_picks_fresh(results_tree):
+def test_find_ot_run_picks_fresh(results_tree, ot_fresh_run_name):
     found = kernel.find_open_targets_run("wrn", max_age_days=90, results_base=results_tree)
     assert found is not None
-    assert found.name == "2026-07-01_120000"
+    assert found.name == ot_fresh_run_name
 
 
 def test_find_ot_run_rejects_stale(results_tree, wrn_ot_files):

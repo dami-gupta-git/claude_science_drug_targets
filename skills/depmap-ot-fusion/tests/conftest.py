@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Load this skill's kernel under a unique module name so it does not collide
@@ -322,6 +323,18 @@ def kras_ot_dir(tmp_path):
 # Run-selection fixture tree
 # ---------------------------------------------------------------------------
 
+# The fresh OT runs are dated relative to now: a fixed date ages past the
+# 90-day freshness window and the fresh-run test starts failing on its own.
+_now = datetime.now()
+OT_FRESH_RUN = (_now - timedelta(days=1)).strftime("%Y-%m-%d_%H%M%S")
+OT_FRESH_INCOMPLETE_RUN = (_now - timedelta(days=1, hours=1)).strftime("%Y-%m-%d_%H%M%S")
+
+
+@pytest.fixture
+def ot_fresh_run_name():
+    return OT_FRESH_RUN
+
+
 @pytest.fixture
 def results_tree(tmp_path):
     """
@@ -330,9 +343,9 @@ def results_tree(tmp_path):
         2026-01-01_120000/  <- complete
         2026-01-01_110000/  <- incomplete (missing lineage_enrichment.csv)
       target_evidence/wrn/
-        2026-07-01_120000/  <- complete, fresh
-        2025-01-01_120000/  <- complete, stale (>90 days old)
-        2026-07-01_110000/  <- incomplete (missing safety.csv)
+        OT_FRESH_RUN/             <- complete, fresh (one day old)
+        2025-01-01_120000/        <- complete, stale (>90 days old)
+        OT_FRESH_INCOMPLETE_RUN/  <- incomplete (missing safety.csv)
     """
     base = tmp_path / "results"
 
@@ -348,7 +361,7 @@ def results_tree(tmp_path):
     (dm_incomplete / "selectivity.csv").write_text(WRN_DEPMAP["selectivity.csv"])
 
     # OT complete, fresh
-    ot_fresh = base / "target_evidence" / "wrn" / "2026-07-01_120000"
+    ot_fresh = base / "target_evidence" / "wrn" / OT_FRESH_RUN
     ot_fresh.mkdir(parents=True)
     for fname, content in WRN_OT.items():
         (ot_fresh / fname).write_text(content)
@@ -360,7 +373,7 @@ def results_tree(tmp_path):
         (ot_stale / fname).write_text(content)
 
     # OT incomplete
-    ot_incomplete = base / "target_evidence" / "wrn" / "2026-07-01_110000"
+    ot_incomplete = base / "target_evidence" / "wrn" / OT_FRESH_INCOMPLETE_RUN
     ot_incomplete.mkdir(parents=True)
     for fname in ("identity.csv", "associations.csv", "tractability.csv"):
         (ot_incomplete / fname).write_text(WRN_OT[fname])
