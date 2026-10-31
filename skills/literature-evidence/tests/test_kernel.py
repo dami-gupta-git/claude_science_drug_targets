@@ -35,10 +35,10 @@ HIT_PPR = {
 }
 
 
-def terms(gene, full_name, aliases=(), context=()):
+def terms(gene, full_name, aliases=(), context=(), ambiguous=()):
     """A search_terms record as literature-search-terms writes it."""
     return {"gene": gene, "full_name": full_name, "aliases": list(aliases),
-            "context": list(context), "reasons": {}}
+            "context": list(context), "ambiguous": list(ambiguous), "reasons": {}}
 
 
 def test_build_query_plain():
@@ -85,14 +85,24 @@ def test_build_query_aliases_widen_every_name_clause():
             == '(TITLE:"TP53" OR TITLE:"p53")')
 
 
-def test_build_query_context_requires_an_abstract_word():
-    q = kernel.build_query("PELO", title_only=True, context=["ribosome", "mRNA"])
-    assert q == '(TITLE:"PELO") AND (ABSTRACT:"ribosome" OR ABSTRACT:"mRNA")'
+def test_build_query_context_applies_only_to_ambiguous_names():
+    q = kernel.build_query("MAP3K13", title_only=True, aliases=["LZK"],
+                           context=["kinase", "JNK"], ambiguous=["LZK"])
+    assert q == ('(TITLE:"MAP3K13" OR ((TITLE:"LZK") AND '
+                 '(TITLE:"kinase" OR ABSTRACT:"kinase" OR TITLE:"JNK" OR ABSTRACT:"JNK")))')
+
+
+def test_build_query_context_and_ambiguous_go_together():
+    with pytest.raises(ValueError, match="both"):
+        kernel.build_query("PELO", context=["ribosome"])
+    with pytest.raises(ValueError, match="both"):
+        kernel.build_query("PELO", ambiguous=["PELO"])
 
 
 def test_search_balanced_records_search_terms(monkeypatch):
     monkeypatch.setattr(kernel, "search_europepmc", lambda *a, **k: [])
-    pelo = terms("PELO", "pelota factor", aliases=["pelota"], context=["ribosome"])
+    pelo = terms("PELO", "pelota factor", aliases=["pelota"], context=["ribosome"],
+                 ambiguous=["PELO"])
     r = kernel.search_balanced("PELO", pelo)
     assert r["search_terms"] == pelo
     assert all('ABSTRACT:"ribosome"' in p["query"] for p in r["passes"])

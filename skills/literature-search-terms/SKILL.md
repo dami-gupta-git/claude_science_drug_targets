@@ -9,16 +9,22 @@ description: Choose the extra names and context words literature-evidence search
 
 - `name = approved_name(gene)`. Use only the symbol and this name; do not
   search the literature or look anything else up.
-- Decide two lists:
+- Decide three lists:
   - `aliases`: other names papers put in titles for this gene (TP53 →
     `["p53"]`, MAP3K13 → `["LZK"]`). Empty if the symbol is what the field
     uses. Never a name shared with another gene.
-  - `context`: only if the symbol is also an ordinary word or another
-    gene's name, up to `MAX_CONTEXT_TERMS` words a real paper's abstract
-    would contain (PELO → `["ribosome", "mRNA", "Hbs1", "Dom34"]`).
-    Otherwise empty; it narrows every search pass.
+  - `context`: only if the symbol or an alias is also an ordinary word,
+    another gene's name or some other label (MAP3K13's alias LZK also names
+    bacterial strains), up to `MAX_CONTEXT_TERMS` words a real paper's
+    title or abstract would contain (PELO → `["ribosome", "mRNA", "Hbs1", "Dom34"]`).
+    Otherwise empty.
+  - `ambiguous`: the symbol and/or aliases that collide (PELO →
+    `["PELO", "pelota"]`, MAP3K13 → `["LZK"]`). Only papers matched on
+    these names must carry a context word; the others match freely, so
+    real papers that never use the context words are kept. Set together
+    with `context` or not at all.
 - Give each term a one-line reason in `reasons`.
-- `terms = search_terms(gene, name, aliases, context, reasons)` validates;
+- `terms = search_terms(gene, name, aliases, context, ambiguous, reasons)` validates;
   `write_search_terms(terms, results_dir("literature-search-terms", gene.lower()))`
   saves `search_terms.json`.
 

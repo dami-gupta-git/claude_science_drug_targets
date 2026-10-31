@@ -6,7 +6,7 @@ import literature_search_terms_kernel as kernel
 
 
 PELO = dict(gene="PELO", full_name="pelota mRNA surveillance and ribosome rescue factor",
-            aliases=["pelota"], context=["ribosome", "mRNA"],
+            aliases=["pelota"], context=["ribosome", "mRNA"], ambiguous=["PELO"],
             reasons={"pelota": "older name used in titles",
                      "ribosome": "PELO is a Portuguese word",
                      "mRNA": "PELO is a Portuguese word"})
@@ -19,7 +19,7 @@ def test_search_terms_valid():
 
 
 def test_search_terms_empty_lists_allowed():
-    terms = kernel.search_terms("TYK2", "tyrosine kinase 2", [], [], {})
+    terms = kernel.search_terms("TYK2", "tyrosine kinase 2", [], [], [], {})
     assert terms["aliases"] == [] and terms["context"] == []
 
 
@@ -36,6 +36,13 @@ def test_search_terms_rejects_quote_and_symbol_repeat_and_too_many_context():
     with pytest.raises(ValueError, match="at most"):
         kernel.search_terms(**{**PELO, "context": list("abcde"),
                                "reasons": {**PELO["reasons"], **{c: "x" for c in "abcde"}}})
+
+
+def test_ambiguous_must_be_a_searched_name_and_pair_with_context():
+    with pytest.raises(ValueError, match="not the symbol or an alias"):
+        kernel.search_terms(**{**PELO, "ambiguous": ["Hbs1"]})
+    with pytest.raises(ValueError, match="both"):
+        kernel.search_terms(**{**PELO, "ambiguous": []})
 
 
 def test_write_and_read_latest(tmp_path):

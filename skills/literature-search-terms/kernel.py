@@ -43,14 +43,22 @@ def approved_name(symbol: str, timeout: int = 60) -> str:
 
 
 def search_terms(gene: str, full_name: str | None, aliases: list[str],
-                 context: list[str], reasons: dict[str, str]) -> dict:
+                 context: list[str], ambiguous: list[str],
+                 reasons: dict[str, str]) -> dict:
     """The validated terms record. Raises on any problem rather than dropping a term.
 
     aliases and context may be empty lists, but every term in them needs a
     one-line entry in reasons, so a reader of search_terms.json can see why
     the search was widened or narrowed.
+
+    ambiguous names which of the symbol and aliases collide with something
+    else; only papers matched on those names must also carry a context
+    word. Applying context to every name dropped real MAP3K13 papers whose
+    abstracts name the symbol but none of the context words, when only the
+    alias LZK (also a bacterial strain label) needed it.
     """
-    for label, terms in (("aliases", aliases), ("context", context)):
+    for label, terms in (("aliases", aliases), ("context", context),
+                         ("ambiguous", ambiguous)):
         if not isinstance(terms, list):
             raise ValueError("%s must be a list, got %r" % (label, terms))
         for term in terms:
@@ -63,11 +71,18 @@ def search_terms(gene: str, full_name: str | None, aliases: list[str],
         raise ValueError("context has %d terms; at most %d" % (len(context), MAX_CONTEXT_TERMS))
     if gene.upper() in (a.upper() for a in aliases):
         raise ValueError("aliases repeat the symbol %r" % gene)
+    names = {n.upper() for n in [gene, *aliases]}
+    stray = [t for t in ambiguous if t.upper() not in names]
+    if stray:
+        raise ValueError("ambiguous term(s) %s are not the symbol or an alias" % stray)
+    if bool(context) != bool(ambiguous):
+        raise ValueError("context and ambiguous must both be empty or both be set")
     missing = [t for t in aliases + context if not (reasons.get(t) or "").strip()]
     if missing:
         raise ValueError("no reason given for term(s): %s" % missing)
     return {"gene": gene, "full_name": full_name, "aliases": aliases,
-            "context": context, "reasons": {t: reasons[t] for t in aliases + context}}
+            "context": context, "ambiguous": ambiguous,
+            "reasons": {t: reasons[t] for t in aliases + context}}
 
 
 def write_search_terms(terms: dict, out_dir: Path) -> Path:

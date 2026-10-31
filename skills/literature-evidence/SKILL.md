@@ -7,9 +7,12 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
 
 ## Workflow
 
-- Run the `literature-search-terms` skill for the gene first. Then
+- Invoke the `literature-search-terms` skill for the gene before
+  searching, every run, and follow it to the end; it writes the terms
+  file. Then
   `terms = load_sibling_kernel("literature-search-terms").latest_search_terms(gene)`
-  (`lib.common.skills`). Never hand-write the terms dict.
+  (`lib.common.skills`). Never hand-write the terms dict or reuse another
+  session's file without re-invoking the skill.
 - `retrieval = search_balanced(gene, terms)` is the default entry point
   for a dossier — network call, run in the `python` cell directly (Europe
   PMC is a plain REST API, no MCP connector needed). It returns a dict,
@@ -120,8 +123,9 @@ a claims table has passed both. What still needs a human eye:
   earliest record is last year has not seen the field's founding work; if
   that is genuinely a young target, say so explicitly rather than leaving
   the span unremarked.
-- Skim the landmark titles: if several are not about the gene, the symbol
-  collides with another word and `context` is needed (or is wrong).
+- Skim the landmark titles. If several are not about the gene, or the
+  list is thin for a well-known gene, re-invoke `literature-search-terms`
+  with that finding and search again before extracting claims.
 - All three passes contributed. If no `retrieval_pass` names `landmark`
   or `established`, that query returned nothing — check the symbol
   appears in titles rather than assuming no such papers exist.

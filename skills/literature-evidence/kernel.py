@@ -97,13 +97,15 @@ def build_query(gene: str, extra_terms: str | None = None,
                 full_name: str | None = None,
                 years: tuple[int, int] | None = None,
                 aliases: list[str] | None = None,
-                context: list[str] | None = None) -> str:
+                context: list[str] | None = None,
+                ambiguous: list[str] | None = None) -> str:
     """Europe PMC query for a gene symbol in title or abstract.
 
     aliases are other names the literature uses, matched wherever the
-    symbol is (TP53 papers mostly say p53; MAP3K13 papers say LZK). context
-    words, when given, must appear in the abstract: they narrow a symbol
-    that is also an ordinary word (PELO is Portuguese for "by the"). Both
+    symbol is (TP53 papers mostly say p53; MAP3K13 papers say LZK). A match
+    on a name listed in ambiguous counts only if the title or abstract also
+    carries one of the context words (PELO is Portuguese for "by the"; LZK also
+    labels bacterial strains); other names match unconditionally. All three
     come from the literature-search-terms skill.
 
     extra_terms, if given, is AND-ed onto the gene term as free text
@@ -131,15 +133,21 @@ def build_query(gene: str, extra_terms: str | None = None,
         if term and '"' in term:
             raise ValueError('%r contains a double quote, which breaks '
                              'the Europe PMC query syntax' % term)
-    if title_only:
-        clauses = ['TITLE:"%s"' % n for n in names]
-        if full_name:
-            clauses.append('(TITLE:"%s" AND ABSTRACT:"%s")' % (full_name, gene))
-    else:
-        clauses = ['TITLE:"%s" OR ABSTRACT:"%s"' % (n, n) for n in names]
+    flagged = {n.upper() for n in ambiguous or []}
+    if bool(flagged) != bool(context):
+        raise ValueError("context and ambiguous must both be empty or both be set")
+    context_clause = " OR ".join('TITLE:"%s" OR ABSTRACT:"%s"' % (c, c)
+                                 for c in context or [])
+    clauses = []
+    for n in names:
+        clause = ('TITLE:"%s"' % n if title_only
+                  else 'TITLE:"%s" OR ABSTRACT:"%s"' % (n, n))
+        if n.upper() in flagged:
+            clause = "((%s) AND (%s))" % (clause, context_clause)
+        clauses.append(clause)
+    if title_only and full_name:
+        clauses.append('(TITLE:"%s" AND ABSTRACT:"%s")' % (full_name, gene))
     query = "(%s)" % " OR ".join(clauses)
-    if context:
-        query += " AND (%s)" % " OR ".join('ABSTRACT:"%s"' % c for c in context)
     if years:
         query += " AND PUB_YEAR:[%d TO %d]" % years
     if extra_terms:
@@ -366,8 +374,7 @@ def search_balanced(gene: str, search_terms: dict,
         raise ValueError("search_terms are for %r, not %r"
                          % (search_terms.get("gene"), gene))
     full_name = search_terms.get("full_name")
-    terms = {"aliases": search_terms.get("aliases") or None,
-             "context": search_terms.get("context") or None}
+    terms = {k: search_terms.get(k) or None for k in ("aliases", "context", "ambiguous")}
     passes = (
         ("recent", build_query(gene, extra_terms, include_preprints, **terms),
          None, recent, None),

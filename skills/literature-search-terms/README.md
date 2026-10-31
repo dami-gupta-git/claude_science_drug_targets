@@ -23,6 +23,7 @@ name = approved_name(gene)
 # decide aliases and context from gene and name (see SKILL.md), e.g. for PELO:
 terms = search_terms(gene, name, aliases=["pelota"],
                      context=["ribosome", "mRNA", "Hbs1", "Dom34"],
+                     ambiguous=["PELO", "pelota"],
                      reasons={"pelota": "older name, still used in titles",
                               "ribosome": "PELO is also a Portuguese word", ...})
 write_search_terms(terms, results_dir("literature-search-terms", gene.lower()))
