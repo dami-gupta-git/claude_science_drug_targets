@@ -200,11 +200,14 @@ def drug_summary_table(data: dict) -> pd.DataFrame:
     the tier (CLINICAL_STAGE_TIERS) of the highest stage across the group's
     rows, empty when every row is WITHDRAWAL or UNKNOWN; all_stages lists
     every raw stage seen, so a withdrawal stays visible. forms lists every
-    ChEMBL id folded in.
+    ChEMBL id folded in. n_indications_all_targets counts the drug's
+    indications whichever of its targets they act through (ruxolitinib's
+    JAK2-driven myelofibrosis is counted under TYK2), so it is not evidence
+    about this target.
     """
     columns = ["drug_id", "drug_name", "drug_type", "max_clinical_stage",
                "all_stages", "action_type", "mechanism_of_action",
-               "n_indications", "forms", "drug_url"]
+               "n_indications_all_targets", "forms", "drug_url"]
     drugs = known_drugs_table(data)
     if drugs.empty:
         return pd.DataFrame(columns=columns)
@@ -225,7 +228,7 @@ def drug_summary_table(data: dict) -> pd.DataFrame:
             "all_stages": "; ".join(stages) or None,
             "action_type": join_distinct(rows["action_type"]),
             "mechanism_of_action": join_distinct(rows["mechanism_of_action"]),
-            "n_indications": rows["disease_id"].dropna().nunique(),
+            "n_indications_all_targets": rows["disease_id"].dropna().nunique(),
             "forms": join_distinct(rows["drug_id"]),
             "drug_url": DRUG_URL.format(id=group_id),
         })

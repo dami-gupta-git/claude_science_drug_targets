@@ -147,7 +147,7 @@ def test_drug_summary_folds_salt_into_parent():
     row = df.iloc[0]
     assert row["drug_id"] == "CHEMBL221959"
     assert row["max_clinical_stage"] == "APPROVED"
-    assert row["n_indications"] == 2
+    assert row["n_indications_all_targets"] == 2
     assert row["forms"] == "CHEMBL221959; CHEMBL2103743"
 
 

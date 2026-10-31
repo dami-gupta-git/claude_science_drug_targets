@@ -63,7 +63,9 @@ Source-specific guidance:
   in its row order (see `drug_summary_table`), never by hand from
   `known_drugs.csv`. If trimmed, cut from the bottom and state how many
   drugs were left out. Write "approved per Open Targets", not "approved":
-  its labels lag regulators and miss some regional approvals.
+  its labels lag regulators and miss some regional approvals. Do not cite
+  `n_indications_all_targets` as evidence for this target; it counts a
+  drug's indications through every target it hits.
 - **Safety**: if liabilities are recorded, name the events; do not
   summarise as a count. An empty Open Targets safety table is not
   evidence of safety; say what gnomAD constraint shows instead.
@@ -84,7 +86,8 @@ Source-specific guidance:
   in the population; describe the reference allele as the rare one.
   When saying how many people carry a variant, quote
   `minor_allele_carrier_fraction`, never the allele frequency, which
-  counts gene copies. It is empty on X, Y and mitochondrial genes; say so
+  counts gene copies, and call it a share of gnomAD participants, who are
+  mostly of European ancestry, not of people worldwide. It is empty on X, Y and mitochondrial genes; say so
   instead of estimating it (see `minor_allele_carriers`).
 - **Tumour mutations**: a mutation count is only readable against the
   MSI-high sample count in `tumour_cohort.csv` - give both. Report
