@@ -71,6 +71,9 @@ GNOMAD_LOF_HIGH_CONFIDENCE = "HC"
 # gnomAD's consequence label for a missense variant.
 GNOMAD_MISSENSE_CONSEQUENCE = "missense_variant"
 
+# gnomAD chrom values on which every person carries two copies.
+AUTOSOMES = {str(n) for n in range(1, 23)}
+
 CBIOPORTAL_API_URL = "https://www.cbioportal.org/api"
 CBIOPORTAL_SAMPLE_URL = ("https://www.cbioportal.org/patient?studyId={study}"
                          "&sampleId={sample}")
@@ -357,6 +360,8 @@ query Gene($symbol: String!, $referenceGenome: ReferenceGenomeId!, $dataset: Dat
     gene_id
     symbol
     name
+    chrom
+    canonical_transcript_id
     gnomad_constraint {
       exp_lof obs_lof oe_lof oe_lof_lower oe_lof_upper
       exp_mis obs_mis oe_mis lof_z mis_z pLI flags
@@ -364,12 +369,12 @@ query Gene($symbol: String!, $referenceGenome: ReferenceGenomeId!, $dataset: Dat
     variants(dataset: $dataset) {
       variant_id
       consequence
+      transcript_id
       hgvsp
       lof
       lof_filter
       flags
-      exome { ac an homozygote_count }
-      genome { ac an homozygote_count }
+      joint { ac an homozygote_count }
     }
   }
 }
@@ -441,19 +446,13 @@ GNOMAD_VARIANT_COLUMNS = ["variant_id", "reference_genome", "consequence", "hgvs
 
 
 def gnomad_variant_row(variant: dict, gene: dict) -> dict:
-    """One variant with exome and genome carrier counts pooled.
+    """One variant with gnomAD's joint (exome plus genome) carrier counts.
 
-    Exome and genome callsets are separate cohorts in gnomAD, so their allele
-    counts are summed and their allele numbers summed alongside - the two
-    columns are what the frequency is derived from, and both are kept so a
-    reader can see which callset carries the signal.
+    The joint block is gnomAD's own combination of the two callsets. A
+    variant without one has empty counts rather than zeros.
     """
-    ac = an = hom = 0
-    for callset in ("exome", "genome"):
-        block = variant.get(callset) or {}
-        ac += block.get("ac") or 0
-        an += block.get("an") or 0
-        hom += block.get("homozygote_count") or 0
+    joint = variant.get("joint") or {}
+    ac, an, hom = joint.get("ac"), joint.get("an"), joint.get("homozygote_count")
     return {
         "variant_id": variant.get("variant_id"),
         # variant_id is a build-specific coordinate; carried per row so a
@@ -466,7 +465,7 @@ def gnomad_variant_row(variant: dict, gene: dict) -> dict:
         "flags": "; ".join(variant.get("flags") or []) or None,
         "allele_count": ac,
         "allele_number": an,
-        "allele_frequency": (ac / an) if an else None,
+        "allele_frequency": (ac / an) if an and ac is not None else None,
         "homozygote_count": hom,
         "variant_url": GNOMAD_VARIANT_URL.format(
             id=variant.get("variant_id"), dataset=gene.get("dataset")),
@@ -483,34 +482,72 @@ def gnomad_lof_variants_table(gene: dict) -> pd.DataFrame:
     return out
 
 
+def minor_allele_carriers(row: dict, chrom: str) -> int | None:
+    """People carrying at least one copy of the minor allele; None off the autosomes.
+
+    On an autosome everyone called at the site has two copies, so an_people is
+    an/2 and an alt-allele carrier count is ac - homozygotes (each homozygote
+    holds two of the ac copies). Where the reference allele is the minor one,
+    its carriers are everyone not homozygous for the alt. On X, Y and the
+    mitochondrial genome copy number differs by sex or is not two, so the
+    count is left empty rather than computed on the two-copy assumption.
+    """
+    if chrom not in AUTOSOMES:
+        return None
+    ac, an, hom = row["allele_count"], row["allele_number"], row["homozygote_count"]
+    if ac is None or not an or hom is None:
+        return None
+    return an // 2 - hom if row["reference_is_minor"] else ac - hom
+
+
 def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> pd.DataFrame:
-    """Missense variants whose minor allele frequency is at least the cutoff.
+    """Missense variants in the canonical transcript whose minor allele frequency
+    is at least the cutoff.
 
     min_allele_frequency is caller-supplied with no default. A common missense
     variant is a candidate natural experiment (TYK2 P1104A), but gnomAD says
     only that it is common, not that it changes protein function.
 
+    gnomAD reports each variant's consequence on one transcript; a row is kept
+    only when that is the gene's canonical transcript, so hgvsp is in canonical
+    numbering and a change to a minor isoform is not listed as a change to the
+    protein. gnomAD's consequence_in_canonical_transcript flag is null on this
+    endpoint, so transcript_id is compared instead.
+
     The cutoff applies to the minor allele, min(AF, 1 - AF). Where the
     reference genome carries the rarer allele (PELO L221M, AF 0.91), the
     gnomAD "variant" is the population's usual form; reference_is_minor marks
     these rows, and their homozygote_count counts people with the usual form.
-    A variant whose allele number is zero has no frequency and is excluded.
+    minor_allele_carrier_fraction is the share of people, not of gene copies;
+    see minor_allele_carriers. A variant whose allele number is zero has no
+    frequency and is excluded.
     """
     if not 0 < min_allele_frequency <= 0.5:
         raise ValueError("min_allele_frequency is a minor allele frequency and "
                          "must be in (0, 0.5], got %r" % min_allele_frequency)
+    canonical = gene.get("canonical_transcript_id")
+    if not canonical:
+        raise ValueError("gnomAD gave no canonical transcript for %s"
+                         % gene.get("symbol"))
     columns = GNOMAD_VARIANT_COLUMNS[:-1] + [
-        "minor_allele_frequency", "reference_is_minor", "variant_url"]
+        "transcript_id", "minor_allele_frequency", "reference_is_minor",
+        "minor_allele_carriers", "minor_allele_carrier_fraction", "variant_url"]
     rows = []
     for variant in gene.get("variants") or []:
-        if variant.get("consequence") != GNOMAD_MISSENSE_CONSEQUENCE:
+        if (variant.get("consequence") != GNOMAD_MISSENSE_CONSEQUENCE
+                or variant.get("transcript_id") != canonical):
             continue
         row = gnomad_variant_row(variant, gene)
         af = row["allele_frequency"]
         if af is None or min(af, 1 - af) < min_allele_frequency:
             continue
+        row["transcript_id"] = canonical
         row["minor_allele_frequency"] = min(af, 1 - af)
         row["reference_is_minor"] = af > 0.5
+        carriers = minor_allele_carriers(row, gene.get("chrom"))
+        row["minor_allele_carriers"] = carriers
+        row["minor_allele_carrier_fraction"] = (
+            carriers / (row["allele_number"] // 2) if carriers is not None else None)
         rows.append(row)
     out = pd.DataFrame(rows, columns=columns)
     if len(out):

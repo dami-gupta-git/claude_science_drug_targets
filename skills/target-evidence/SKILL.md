@@ -71,6 +71,10 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   claim. An empty table means no missense variant cleared the cutoff.
   Where `reference_is_minor` is true, the listed allele is the usual form
   in the population; describe the reference allele as the rare one.
+  When saying how many people carry a variant, quote
+  `minor_allele_carrier_fraction`, never the allele frequency, which
+  counts gene copies. It is empty on X, Y and mitochondrial genes; say so
+  instead of estimating it (see `minor_allele_carriers`).
 - **Tumour mutations**: a mutation count is only readable against the
   MSI-high sample count in `tumour_cohort.csv` - give both. Report
   variant allele frequency when arguing a variant is clonal or

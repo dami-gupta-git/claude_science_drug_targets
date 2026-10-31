@@ -360,6 +360,8 @@ GNOMAD_GENE = {
     "gene_id": "ENSG00000165392",
     "symbol": "WRN",
     "dataset": "gnomad_r4",
+    "chrom": "8",
+    "canonical_transcript_id": "ENST_CANON",
     "gnomad_constraint": {
         "oe_lof": 0.82, "oe_lof_lower": 0.72, "oe_lof_upper": 0.94,
         "obs_lof": 149, "exp_lof": 180.7, "pLI": 0.0, "lof_z": -1.2,
@@ -367,18 +369,21 @@ GNOMAD_GENE = {
     },
     "variants": [
         {"variant_id": "8-1-A-T", "consequence": "frameshift_variant",
-         "hgvsp": "p.Ser2fs", "lof": "HC", "lof_filter": None,
-         "flags": ["lof_flag"],
-         "exome": {"ac": 5, "an": 1000, "homozygote_count": 1},
-         "genome": {"ac": 1, "an": 500, "homozygote_count": 0}},
+         "transcript_id": "ENST_CANON", "hgvsp": "p.Ser2fs", "lof": "HC",
+         "lof_filter": None, "flags": ["lof_flag"],
+         "joint": {"ac": 6, "an": 1500, "homozygote_count": 1}},
         {"variant_id": "8-2-G-C", "consequence": "missense_variant",
-         "hgvsp": "p.Ala3Gly", "lof": None, "lof_filter": None, "flags": [],
-         "exome": {"ac": 90, "an": 1000, "homozygote_count": 4},
-         "genome": None},
+         "transcript_id": "ENST_CANON", "hgvsp": "p.Ala3Gly", "lof": None,
+         "lof_filter": None, "flags": [],
+         "joint": {"ac": 90, "an": 1000, "homozygote_count": 4}},
         {"variant_id": "8-3-C-T", "consequence": "stop_gained",
-         "hgvsp": "p.Arg9Ter", "lof": "LC", "lof_filter": "END_TRUNC",
-         "flags": [], "exome": {"ac": 2, "an": 1000, "homozygote_count": 0},
-         "genome": None},
+         "transcript_id": "ENST_CANON", "hgvsp": "p.Arg9Ter", "lof": "LC",
+         "lof_filter": "END_TRUNC", "flags": [],
+         "joint": {"ac": 2, "an": 1000, "homozygote_count": 0}},
+        {"variant_id": "8-5-T-G", "consequence": "missense_variant",
+         "transcript_id": "ENST_ALT", "hgvsp": "p.Lys7Gln", "lof": None,
+         "lof_filter": None, "flags": [],
+         "joint": {"ac": 200, "an": 1000, "homozygote_count": 10}},
     ],
 }
 
@@ -404,28 +409,49 @@ def test_gnomad_lof_variants_keeps_high_confidence_only():
     assert table.iloc[0]["homozygote_count"] == 1
 
 
-def test_gnomad_missense_variants_filters_by_frequency():
+def test_gnomad_missense_variants_filters_by_frequency_on_canonical_transcript():
     table = kernel.gnomad_missense_variants_table(GNOMAD_GENE, 0.05)
     assert list(table.variant_id) == ["8-2-G-C"]
-    assert table.iloc[0]["allele_frequency"] == 0.09
-    assert table.iloc[0]["homozygote_count"] == 4
-    assert not table.iloc[0]["reference_is_minor"]
+    row = table.iloc[0]
+    assert row["allele_frequency"] == 0.09
+    assert row["homozygote_count"] == 4
+    assert not row["reference_is_minor"]
+    # 90 copies, 4 people holding two each: 86 carriers of 500 people.
+    assert row["minor_allele_carriers"] == 86
+    assert math.isclose(row["minor_allele_carrier_fraction"], 0.172)
     assert kernel.gnomad_missense_variants_table(GNOMAD_GENE, 0.1).empty
 
 
+REF_MINOR_VARIANT = {"variant_id": "8-4-C-A", "consequence": "missense_variant",
+                     "transcript_id": "ENST_CANON", "hgvsp": "p.Leu5Met", "lof": None,
+                     "lof_filter": None, "flags": [],
+                     "joint": {"ac": 910, "an": 1000, "homozygote_count": 415}}
+
+
 def test_gnomad_missense_variants_uses_minor_allele_when_reference_is_rare():
-    variant = {"variant_id": "8-4-C-A", "consequence": "missense_variant",
-               "hgvsp": "p.Leu5Met", "lof": None, "lof_filter": None, "flags": [],
-               "exome": {"ac": 910, "an": 1000, "homozygote_count": 820},
-               "genome": None}
-    table = kernel.gnomad_missense_variants_table(
-        {**GNOMAD_GENE, "variants": [variant]}, 0.05)
-    row = table.iloc[0]
+    gene = {**GNOMAD_GENE, "variants": [REF_MINOR_VARIANT]}
+    row = kernel.gnomad_missense_variants_table(gene, 0.05).iloc[0]
     assert row["allele_frequency"] == 0.91
     assert math.isclose(row["minor_allele_frequency"], 0.09)
     assert row["reference_is_minor"]
-    assert kernel.gnomad_missense_variants_table(
-        {**GNOMAD_GENE, "variants": [variant]}, 0.1).empty
+    # Reference carriers are the 500 people minus the 415 homozygous for the alt.
+    assert row["minor_allele_carriers"] == 85
+    assert kernel.gnomad_missense_variants_table(gene, 0.1).empty
+
+
+def test_gnomad_missense_carriers_left_empty_off_autosomes():
+    for chrom in ("X", "Y", "M"):
+        row = kernel.gnomad_missense_variants_table(
+            {**GNOMAD_GENE, "chrom": chrom}, 0.05).iloc[0]
+        assert row["minor_allele_frequency"] == 0.09
+        assert row["minor_allele_carriers"] is None
+        assert row["minor_allele_carrier_fraction"] is None
+
+
+def test_gnomad_missense_raises_without_canonical_transcript():
+    with pytest.raises(ValueError, match="canonical transcript"):
+        kernel.gnomad_missense_variants_table(
+            {**GNOMAD_GENE, "canonical_transcript_id": None}, 0.05)
 
 
 def test_gnomad_missense_variants_rejects_bad_frequency():
