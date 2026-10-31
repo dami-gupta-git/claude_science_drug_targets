@@ -409,11 +409,27 @@ def test_gnomad_missense_variants_filters_by_frequency():
     assert list(table.variant_id) == ["8-2-G-C"]
     assert table.iloc[0]["allele_frequency"] == 0.09
     assert table.iloc[0]["homozygote_count"] == 4
+    assert not table.iloc[0]["reference_is_minor"]
     assert kernel.gnomad_missense_variants_table(GNOMAD_GENE, 0.1).empty
 
 
+def test_gnomad_missense_variants_uses_minor_allele_when_reference_is_rare():
+    variant = {"variant_id": "8-4-C-A", "consequence": "missense_variant",
+               "hgvsp": "p.Leu5Met", "lof": None, "lof_filter": None, "flags": [],
+               "exome": {"ac": 910, "an": 1000, "homozygote_count": 820},
+               "genome": None}
+    table = kernel.gnomad_missense_variants_table(
+        {**GNOMAD_GENE, "variants": [variant]}, 0.05)
+    row = table.iloc[0]
+    assert row["allele_frequency"] == 0.91
+    assert math.isclose(row["minor_allele_frequency"], 0.09)
+    assert row["reference_is_minor"]
+    assert kernel.gnomad_missense_variants_table(
+        {**GNOMAD_GENE, "variants": [variant]}, 0.1).empty
+
+
 def test_gnomad_missense_variants_rejects_bad_frequency():
-    for bad in (0, -0.01, 1.5):
+    for bad in (0, -0.01, 0.6):
         with pytest.raises(ValueError, match="min_allele_frequency"):
             kernel.gnomad_missense_variants_table(GNOMAD_GENE, bad)
 

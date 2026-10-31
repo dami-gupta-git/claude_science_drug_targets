@@ -69,6 +69,8 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   gnomAD shows only that a variant is common, not that it changes
   function or disease risk; say so, and cite a source for any functional
   claim. An empty table means no missense variant cleared the cutoff.
+  Where `reference_is_minor` is true, the listed allele is the usual form
+  in the population; describe the reference allele as the rare one.
 - **Tumour mutations**: a mutation count is only readable against the
   MSI-high sample count in `tumour_cohort.csv` - give both. Report
   variant allele frequency when arguing a variant is clonal or
@@ -112,8 +114,8 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   cap loses the tail rather than a random sample, so "the top associations are
   X" is supportable and "the gene is associated with X diseases" is not.
 - `gnomad_lof_variants.csv` contains only `lof == HC` rows.
-- `gnomad_missense_variants.csv` contains only missense rows at or above
-  the stated cutoff.
+- `gnomad_missense_variants.csv` contains only missense rows whose
+  `minor_allele_frequency` is at or above the stated cutoff.
 - The two gnomAD counts differ and both are correct: `obs_lof` in
   `gnomad_constraint.csv` is the constraint model's count on one canonical
   transcript excluding flagged variants, while `gnomad_lof_variants.csv` keeps

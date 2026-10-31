@@ -484,23 +484,37 @@ def gnomad_lof_variants_table(gene: dict) -> pd.DataFrame:
 
 
 def gnomad_missense_variants_table(gene: dict, min_allele_frequency: float) -> pd.DataFrame:
-    """Missense variants at or above min_allele_frequency, most common first.
+    """Missense variants whose minor allele frequency is at least the cutoff.
 
     min_allele_frequency is caller-supplied with no default. A common missense
     variant is a candidate natural experiment (TYK2 P1104A), but gnomAD says
-    only that it is common, not that it changes protein function. A variant
-    whose allele number is zero has no frequency and is excluded.
+    only that it is common, not that it changes protein function.
+
+    The cutoff applies to the minor allele, min(AF, 1 - AF). Where the
+    reference genome carries the rarer allele (PELO L221M, AF 0.91), the
+    gnomAD "variant" is the population's usual form; reference_is_minor marks
+    these rows, and their homozygote_count counts people with the usual form.
+    A variant whose allele number is zero has no frequency and is excluded.
     """
-    if not 0 < min_allele_frequency <= 1:
-        raise ValueError("min_allele_frequency must be in (0, 1], got %r"
-                         % min_allele_frequency)
-    rows = [gnomad_variant_row(v, gene) for v in gene.get("variants") or []
-            if v.get("consequence") == GNOMAD_MISSENSE_CONSEQUENCE]
-    rows = [r for r in rows if r["allele_frequency"] is not None
-            and r["allele_frequency"] >= min_allele_frequency]
-    out = pd.DataFrame(rows, columns=GNOMAD_VARIANT_COLUMNS)
+    if not 0 < min_allele_frequency <= 0.5:
+        raise ValueError("min_allele_frequency is a minor allele frequency and "
+                         "must be in (0, 0.5], got %r" % min_allele_frequency)
+    columns = GNOMAD_VARIANT_COLUMNS[:-1] + [
+        "minor_allele_frequency", "reference_is_minor", "variant_url"]
+    rows = []
+    for variant in gene.get("variants") or []:
+        if variant.get("consequence") != GNOMAD_MISSENSE_CONSEQUENCE:
+            continue
+        row = gnomad_variant_row(variant, gene)
+        af = row["allele_frequency"]
+        if af is None or min(af, 1 - af) < min_allele_frequency:
+            continue
+        row["minor_allele_frequency"] = min(af, 1 - af)
+        row["reference_is_minor"] = af > 0.5
+        rows.append(row)
+    out = pd.DataFrame(rows, columns=columns)
     if len(out):
-        out = out.sort_values("allele_frequency", ascending=False).reset_index(drop=True)
+        out = out.sort_values("minor_allele_frequency", ascending=False).reset_index(drop=True)
     return out
 
 
