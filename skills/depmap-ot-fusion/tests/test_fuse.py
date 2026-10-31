@@ -104,7 +104,7 @@ def test_find_ot_run_picks_fresh(results_tree):
 def test_find_ot_run_rejects_stale(results_tree, wrn_ot_files):
     # Only the stale run exists; require freshness of 1 day
     stale_only = results_tree.parent / "stale_only"
-    d = stale_only / "open_targets" / "wrn" / "2025-01-01_120000"
+    d = stale_only / "target_evidence" / "wrn" / "2025-01-01_120000"
     d.mkdir(parents=True)
     for fname, content in wrn_ot_files.items():
         (d / fname).write_text(content)
@@ -134,7 +134,7 @@ def test_fuse_wrn_verdict_fields(wrn_depmap_dir, wrn_ot_dir):
 def test_fuse_kras_verdict_fields(kras_depmap_dir, kras_ot_dir):
     v = kernel.fuse(kras_depmap_dir, kras_ot_dir)["verdict"].iloc[0]
     assert v["gene"] == "KRAS"
-    assert v["classification"] == "selective"
+    assert v["classification"] == "broadly essential"
     assert v["genotype_marker"] == "mutation"
     assert v["max_clinical_stage"] == 4  # APPROVED
 
@@ -151,13 +151,145 @@ def test_fuse_wrn_produces_conflicts(wrn_depmap_dir, wrn_ot_dir):
 def test_fuse_wrn_non_cancer_disease_conflict(wrn_depmap_dir, wrn_ot_dir):
     conflicts = kernel.fuse(wrn_depmap_dir, wrn_ot_dir)["conflicts"]
     types = conflicts["conflict_type"].tolist()
-    assert "non_cancer_top_disease_with_selective_dependency" in types
+    assert "non_cancer_top_disease_with_cancer_dependency" in types
+
+
+# ---------------------------------------------------------------------------
+# Classification labels
+# ---------------------------------------------------------------------------
+
+def test_roles_cover_every_depmap_classification():
+    # A label added to depmap-local without a role here would otherwise be
+    # rejected only at run time, on the first gene that receives it.
+    import importlib.util
+    path = Path(__file__).resolve().parents[2] / "depmap-local" / "kernel.py"
+    spec = importlib.util.spec_from_file_location("depmap_local_labels", path)
+    dk = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dk)
+    assert set(kernel.CLASSIFICATION_ROLES) == set(dk.CLASSIFICATIONS)
+
+
+def test_unknown_classification_raises(tmp_path, wrn_ot_dir):
+    d = tmp_path / "depmap_unknown"
+    d.mkdir()
+    (d / "selectivity.csv").write_text(
+        "gene,n_lines,mean_effect,frac_dependent,frac_positive,classification\n"
+        "WRN,1208,-0.18,0.07,0.0,mostly essential\n"
+    )
+    (d / "lineage_enrichment.csv").write_text(
+        "lineage,n,mean_effect,mean_effect_other,frac_dependent,p_enriched,p_bh\n"
+        "Bowel,63,-0.4,-0.2,0.2,0.01,0.05\n"
+    )
+    with pytest.raises(ValueError, match="mostly essential"):
+        kernel.fuse(d, wrn_ot_dir)
+
+
+# ---------------------------------------------------------------------------
+# fuse — essential gene with a genotype-deepened dependency (PELO)
+# ---------------------------------------------------------------------------
+
+def test_pelo_verdict_genotype(pelo_depmap_dir, pelo_ot_dir):
+    v = kernel.fuse(pelo_depmap_dir, pelo_ot_dir)["verdict"].iloc[0]
+    assert v["classification"] == "broadly essential"
+    assert v["genotype_marker"] == "msi"
+    assert bool(v["genotype_significant"]) is True
+
+
+def test_pelo_narrow_window_conflict_names_genotype(pelo_depmap_dir, pelo_ot_dir):
+    conflicts = kernel.fuse(pelo_depmap_dir, pelo_ot_dir)["conflicts"]
+    row = conflicts[conflicts["conflict_type"] == "essential_with_sm_tractability"]
+    assert len(row) == 1
+    assert "MSI-high lines are more dependent" in row.iloc[0]["description"]
+
+
+def test_pelo_non_cancer_conflict_from_genotype(pelo_depmap_dir, pelo_ot_dir):
+    # PELO's cancer signal is the MSI contrast; its Head and Neck enrichment is a
+    # deeper mean in an essential gene and must not be cited as the signal.
+    conflicts = kernel.fuse(pelo_depmap_dir, pelo_ot_dir)["conflicts"]
+    row = conflicts[conflicts["conflict_type"] == "non_cancer_top_disease_with_cancer_dependency"]
+    assert len(row) == 1
+    assert "MSI-high" in row.iloc[0]["observation_depmap"]
+    assert "Head and Neck" not in row.iloc[0]["observation_depmap"]
+
+
+def test_pelo_readme_leads_with_genotype(pelo_depmap_dir, pelo_ot_dir, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]))
+    tables = kernel.fuse(pelo_depmap_dir, pelo_ot_dir)
+    out = tmp_path / "out"
+    out.mkdir()
+    kernel.write_fusion_readme(out, "PELO", tables, {})
+    text = (out / "README.md").read_text()
+    intro = text.split("## ")[0]
+    assert "MSI-high lines are more dependent" in intro
+    assert "selective dependency" not in text
 
 
 def test_fuse_no_prism_no_drugs_no_prism_conflict(wrn_depmap_dir, wrn_ot_dir):
     # WRN has no PRISM data and no drugs; should NOT produce prism_activity conflict
     conflicts = kernel.fuse(wrn_depmap_dir, wrn_ot_dir)["conflicts"]
     assert "prism_activity_without_clinical_drug" not in conflicts["conflict_type"].tolist()
+
+
+# ---------------------------------------------------------------------------
+# fuse — growth-suppressing genes (the dependency framework does not apply)
+#
+# These guard the failure this fixture was added for: TP53 was reported as
+# "non-essential ... dependent in 0.4% of screened lines", a true statement
+# that invited the reader to treat an absent dependency as a result about
+# druggability. The sign of the effect is the finding.
+# ---------------------------------------------------------------------------
+
+def test_tp53_verdict_reports_direction(tp53_depmap_dir, tp53_ot_dir):
+    v = kernel.fuse(tp53_depmap_dir, tp53_ot_dir)["verdict"].iloc[0]
+    assert v["classification"] == "growth-suppressing"
+    assert v["effect_direction"] == "knockout increases proliferation"
+    # bool(...) because pandas returns numpy.bool_, which fails an `is False` check
+    assert bool(v["dependency_framework_applies"]) is False
+    assert float(v["mean_effect"]) > 0
+
+
+def test_tp53_names_no_top_lineage(tp53_depmap_dir, tp53_ot_dir):
+    # Four lineages pass BH correction, but all have positive mean effects, so
+    # none is a dependency. A named "top lineage" here would be a false positive.
+    v = kernel.fuse(tp53_depmap_dir, tp53_ot_dir)["verdict"].iloc[0]
+    assert v["top_lineage"] is None or pd.isna(v["top_lineage"])
+    assert not bool(v["top_lineage_significant"])
+
+
+def test_tp53_raises_growth_suppressing_conflict(tp53_depmap_dir, tp53_ot_dir):
+    types = kernel.fuse(tp53_depmap_dir, tp53_ot_dir)["conflicts"]["conflict_type"].tolist()
+    assert "growth_suppressing_gene_not_a_dependency" in types
+
+
+def test_tp53_suppresses_misdiagnosing_conflict(tp53_depmap_dir, tp53_ot_dir):
+    # disease_without_lineage_enrichment attributes the missing dependency to
+    # weak evidence. For a growth-suppressing gene that is the wrong diagnosis,
+    # so rule 0 must replace it rather than fire alongside it.
+    types = kernel.fuse(tp53_depmap_dir, tp53_ot_dir)["conflicts"]["conflict_type"].tolist()
+    assert "disease_without_lineage_enrichment" not in types
+
+
+def test_tp53_readme_leads_with_direction_not_frac_dependent(
+        tp53_depmap_dir, tp53_ot_dir, tmp_path):
+    tables = kernel.fuse(tp53_depmap_dir, tp53_ot_dir)
+    out = tmp_path / "out"
+    out.mkdir()
+    kernel.write_fusion_readme(out, "TP53", tables, {
+        "depmap": {"run_dir": str(tp53_depmap_dir), "timestamp": "t", "reused": False},
+        "open_targets": {"run_dir": str(tp53_ot_dir), "timestamp": "t", "reused": False},
+    })
+    text = (out / "README.md").read_text()
+    assert "increases proliferation" in text
+    # The specific phrasing that made the original report wrong.
+    assert "TP53 is non-essential" not in text
+
+
+def test_wrn_still_classified_as_dependency(wrn_depmap_dir, wrn_ot_dir):
+    # The growth-suppressing path must not capture a real selective dependency.
+    v = kernel.fuse(wrn_depmap_dir, wrn_ot_dir)["verdict"].iloc[0]
+    assert v["classification"] == "selective"
+    assert bool(v["dependency_framework_applies"]) is True
+    assert v["effect_direction"] == "knockout reduces proliferation"
 
 
 # ---------------------------------------------------------------------------

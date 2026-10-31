@@ -1,5 +1,6 @@
 import math
 
+import pandas as pd
 import pytest
 
 import kernel
@@ -19,7 +20,7 @@ SAMPLE = {
         "drugAndClinicalCandidates": {
             "count": 1,
             "rows": [{
-                "maxClinicalStage": 1,
+                "maxClinicalStage": "PHASE_1",
                 "drug": {
                     "id": "CHEMBL123",
                     "name": "Example Drug",
@@ -75,7 +76,7 @@ def test_known_drugs_table():
     assert len(df) == 1
     row = df.iloc[0]
     assert row["drug_id"] == "CHEMBL123"
-    assert row["max_clinical_stage"] == 1
+    assert row["max_clinical_stage"] == "PHASE_1"
     assert row["action_type"] == "INHIBITOR"
     assert row["mechanism_of_action"] == "WRN helicase inhibitor"
     assert row["disease_id"] == "EFO_0000305"
@@ -116,7 +117,96 @@ def test_known_drugs_table_empty():
         "drug_id", "drug_name", "drug_type", "max_clinical_stage",
         "action_type", "mechanism_of_action",
         "disease_id", "disease_name", "drug_url",
+        "parent_drug_id", "parent_drug_name",
     ]
+
+
+def drug_row(drug_id, name, stage, parent=None, disease_id="EFO_1", moa="JAK inhibitor"):
+    return {
+        "maxClinicalStage": stage,
+        "drug": {"id": drug_id, "name": name, "drugType": "Small molecule",
+                 "parentMolecule": parent,
+                 "mechanismsOfAction": {"rows": [
+                     {"actionType": "INHIBITOR", "mechanismOfAction": moa}]}},
+        "diseases": [{"disease": {"id": disease_id, "name": disease_id}}],
+    }
+
+
+def drugs_data(*rows):
+    return {"target": {"drugAndClinicalCandidates": {"rows": list(rows)}}}
+
+
+def test_drug_summary_folds_salt_into_parent():
+    # TYK2 shape: the salt carries APPROVAL, the parent PHASE_4.
+    df = kernel.drug_summary_table(drugs_data(
+        drug_row("CHEMBL221959", "TOFACITINIB", "PHASE_4", disease_id="EFO_1"),
+        drug_row("CHEMBL2103743", "TOFACITINIB CITRATE", "APPROVAL",
+                 parent={"id": "CHEMBL221959", "name": "TOFACITINIB"}, disease_id="EFO_2"),
+    ))
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["drug_id"] == "CHEMBL221959"
+    assert row["max_clinical_stage"] == "APPROVED"
+    assert row["n_indications"] == 2
+    assert row["forms"] == "CHEMBL221959; CHEMBL2103743"
+
+
+def test_drug_summary_keeps_deuterated_drug_separate():
+    df = kernel.drug_summary_table(drugs_data(
+        drug_row("CHEMBL1789941", "RUXOLITINIB", "PHASE_4"),
+        drug_row("CHEMBL4594382", "DEURUXOLITINIB PHOSPHATE", "APPROVAL",
+                 parent={"id": "CHEMBL1789941", "name": "RUXOLITINIB"}),
+    ))
+    assert set(df["drug_name"]) == {"RUXOLITINIB", "DEURUXOLITINIB PHOSPHATE"}
+
+
+def test_drug_summary_salt_without_listed_parent_uses_parent_identity():
+    df = kernel.drug_summary_table(drugs_data(
+        drug_row("CHEMBL4298167", "FILGOTINIB MALEATE", "APPROVAL",
+                 parent={"id": "CHEMBL3301607", "name": "FILGOTINIB"}),
+    ))
+    assert df.iloc[0]["drug_id"] == "CHEMBL3301607"
+    assert df.iloc[0]["forms"] == "CHEMBL4298167"
+
+
+def test_drug_summary_orders_approved_first():
+    df = kernel.drug_summary_table(drugs_data(
+        drug_row("C1", "ALPHA", "PHASE_2"),
+        drug_row("C2", "BETA", "APPROVAL"),
+        drug_row("C3", "GAMMA", "PHASE_4"),
+        drug_row("C4", "DELTA", "UNKNOWN"),
+    ))
+    assert list(df["drug_name"]) == ["BETA", "GAMMA", "ALPHA", "DELTA"]
+
+
+def test_drug_summary_phase_4_only_counts_as_approved():
+    # TYK2 shape: deucravacitinib has only post-marketing (PHASE_4) rows.
+    df = kernel.drug_summary_table(drugs_data(drug_row("C1", "ALPHA", "PHASE_4")))
+    assert df.iloc[0]["max_clinical_stage"] == "APPROVED"
+    assert df.iloc[0]["all_stages"] == "PHASE_4"
+
+
+def test_drug_summary_unranked_stages_kept_visible():
+    df = kernel.drug_summary_table(drugs_data(
+        drug_row("C1", "ALPHA", "WITHDRAWAL", disease_id="EFO_1"),
+        drug_row("C1", "ALPHA", "PHASE_3", disease_id="EFO_2"),
+        drug_row("C2", "BETA", "UNKNOWN"),
+    ))
+    by_name = df.set_index("drug_name")
+    assert by_name.loc["ALPHA", "max_clinical_stage"] == "PHASE_3"
+    assert by_name.loc["ALPHA", "all_stages"] == "PHASE_3; WITHDRAWAL"
+    assert pd.isna(by_name.loc["BETA", "max_clinical_stage"])
+
+
+def test_drug_summary_unrecognised_stage_raises():
+    with pytest.raises(ValueError, match="Unrecognised"):
+        kernel.drug_summary_table(drugs_data(drug_row("C1", "ALPHA", "PHASE_9")))
+
+
+def test_drug_summary_empty():
+    df = kernel.drug_summary_table(drugs_data())
+    assert len(df) == 0
+    assert "max_clinical_stage" in df.columns
 
 
 def test_tractability_table_keeps_false_rows():
@@ -138,13 +228,10 @@ def test_associations_table_pivots_datatypes_and_fills_absent_with_nan():
     assert math.isnan(row["literature"])
 
 
-def test_genetic_evidence_table():
-    df = kernel.genetic_evidence_table(SAMPLE)
-    assert len(df) == 2
-    row = df[df["disease_id"] == "EFO_0000305"].iloc[0]
-    assert row["genetic_association_score"] == 0.5
-    row2 = df[df["disease_id"] == "EFO_0000311"].iloc[0]
-    assert math.isnan(row2["genetic_association_score"])
+def test_top_association_genetic_scores_table_drops_diseases_without_score():
+    df = kernel.top_association_genetic_scores_table(SAMPLE)
+    assert list(df["disease_id"]) == ["EFO_0000305"]
+    assert df.iloc[0]["genetic_association_score"] == 0.5
 
 
 def test_safety_table():
@@ -165,9 +252,10 @@ def test_safety_table_empty():
 @pytest.mark.parametrize("table_fn", [
     kernel.identity_table,
     kernel.known_drugs_table,
+    kernel.drug_summary_table,
     kernel.tractability_table,
     kernel.associations_table,
-    kernel.genetic_evidence_table,
+    kernel.top_association_genetic_scores_table,
     kernel.safety_table,
 ])
 def test_null_target_raises_clear_error(table_fn):
@@ -227,14 +315,43 @@ def test_markdown_table():
     assert "| 1 | 2 |" in out
 
 
+def test_markdown_table_formats_floats():
+    rows = [{"p": 2.0763817748514768e-11, "q": 0.819959670562054,
+             "x": 17.36, "flag": True}]
+    out = kernel.markdown_table(rows)
+    assert "| 2.08e-11 | 0.82 | 17.36 | True |" in out
+
+
 def test_write_run(tmp_path):
     written = kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.", SAMPLE_STEPS)
     assert set(written) == {
-        "identity", "known_drugs", "tractability",
-        "associations", "genetic_evidence", "safety", "readme",
+        "identity", "known_drugs", "drug_summary", "tractability",
+        "associations", "top_association_genetic_scores", "safety",
+        "association_coverage", "readme",
     }
     for path in written.values():
         assert path.is_file()
+
+
+def test_write_run_records_association_truncation(tmp_path):
+    # associations.csv is a capped top slice; the coverage file is what says so.
+    written = kernel.write_run(SAMPLE, tmp_path, "WRN", "Summary.",
+                               SAMPLE_STEPS)
+    coverage = pd.read_csv(written["association_coverage"])
+    assert list(coverage.columns) == ["n_returned", "n_total", "truncated",
+                                      "lowest_returned_score"]
+    assert len(coverage) == 1
+
+
+def test_association_count_flags_truncation():
+    capped = {"target": {"associatedDiseases": {
+        "count": 1002, "rows": [{"score": 0.5}] * 20}}}
+    out = kernel.association_count(capped)
+    assert out["truncated"] is True
+    assert out["n_total"] == 1002 and out["n_returned"] == 20
+    complete = {"target": {"associatedDiseases": {
+        "count": 3, "rows": [{"score": 0.5}] * 3}}}
+    assert kernel.association_count(complete)["truncated"] is False
 
 
 # --- gnomAD -----------------------------------------------------------------

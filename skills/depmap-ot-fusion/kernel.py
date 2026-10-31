@@ -10,10 +10,29 @@ from pathlib import Path
 OT_GRAPHQL_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 OT_DEFAULT_MAX_AGE_DAYS = 90
 
+
+def project_root():
+    """Repo root, resolved lazily.
+
+    Bound at module scope so tests can monkeypatch it and so a published
+    copy of this skill still imports: the underlying lib.common.paths is
+    only present inside the repo, and importing it at module scope made
+    the whole sidecar unloadable elsewhere.
+    """
+    from lib.common.paths import project_root as _impl
+    return _impl()
+
+
+def results_dir(skill, subject):
+    """Timestamped run directory under results/, resolved lazily."""
+    from lib.common.paths import results_dir as _impl
+    return _impl(skill, subject)
+
+
 DEPMAP_REQUIRED = {"selectivity.csv", "lineage_enrichment.csv"}
 OT_REQUIRED = {
     "identity.csv", "associations.csv", "tractability.csv",
-    "known_drugs.csv", "safety.csv", "genetic_evidence.csv",
+    "known_drugs.csv", "safety.csv", "top_association_genetic_scores.csv",
 }
 CONTRAST_FILES = [
     "msi_contrast.csv", "msi_lineage_contrast.csv",
@@ -72,6 +91,30 @@ CANCER_TERMS = (
     "neoplasm", "neoplasia",
 )
 
+# How each depmap-local classification is treated by the rules below. Keys must
+# equal CLASSIFICATIONS in depmap-local/kernel.py (a test enforces it), and
+# classification_role raises on any other label, so a label added upstream
+# cannot silently skip every classification-gated rule.
+CLASSIFICATION_ROLES = {
+    "common essential": "essential",
+    "broadly essential": "essential",
+    "selective": "selective",
+    "growth-suppressing": "growth-suppressing",
+    "non-essential": "non-dependency",
+}
+GENOTYPE_ALPHA = 0.05
+
+# (frame key, verdict marker name, positive-group label, negative-group label,
+#  positive mean column, negative mean column, p column), in preference order.
+GENOTYPE_CONTRASTS = (
+    ("msi_contrast", "msi", "MSI-high", "MSS",
+     "mean_effect_msi_high", "mean_effect_mss", "p_msi_more_dependent"),
+    ("mutation_contrast_overall", "mutation", "mutant", "wild-type",
+     "mean_effect_mutant", "mean_effect_wt", "p_mutant_more_dependent"),
+    ("fusion_contrast", "fusion", "fusion-positive", "fusion-negative",
+     "mean_effect_fusion_pos", "mean_effect_fusion_neg", "p_fusion_more_dependent"),
+)
+
 OT_SEARCH_QUERY = """
 query Search($q: String!) {
   search(queryString: $q, entityNames: ["target"], page: {index: 0, size: 5}) {
@@ -115,7 +158,7 @@ def read_open_targets_run(run_dir):
     run_dir = Path(run_dir)
     frames = {}
     for name in ["identity", "associations", "tractability",
-                 "known_drugs", "safety", "genetic_evidence"]:
+                 "known_drugs", "safety", "top_association_genetic_scores"]:
         p = run_dir / f"{name}.csv"
         if p.exists():
             frames[name] = pd.read_csv(p)
@@ -173,7 +216,6 @@ def parse_run_timestamp(run_dir):
 
 def find_depmap_run(gene, max_age_days=None, results_base=None):
     """Newest complete DepMap run for gene passing staleness check, or None."""
-    from lib.common.paths import project_root
     base = Path(results_base) if results_base else project_root() / "results"
     gene_dir = base / "depmap_local" / gene.lower()
     if not gene_dir.is_dir():
@@ -202,7 +244,6 @@ def find_open_targets_run(gene, max_age_days=None, results_base=None):
     rejects a non-literal default, and a rejected file defines none of this
     module's helpers.
     """
-    from lib.common.paths import project_root
     max_age_days = OT_DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
     base = Path(results_base) if results_base else project_root() / "results"
     gene_dir = base / "target_evidence" / gene.lower()
@@ -263,26 +304,58 @@ def stage_to_num(stage_str):
     return int(m.group(1)) if m else None
 
 
-def pick_genotype_marker(frames):
-    """Return (marker_name, detail_str) for the most informative contrast, or (None, None)."""
-    for key, pval_col in [
-        ("msi_contrast", "p_msi_more_dependent"),
-        ("mutation_contrast_overall", "p_mutant_more_dependent"),
-    ]:
+def classification_role(sel):
+    """(classification, role) from a selectivity frame; raises on an unknown label."""
+    classification = str(sel.iloc[0]["classification"])
+    if classification not in CLASSIFICATION_ROLES:
+        raise ValueError(
+            f"unknown DepMap classification {classification!r}; "
+            f"expected one of {sorted(CLASSIFICATION_ROLES)}"
+        )
+    return classification, CLASSIFICATION_ROLES[classification]
+
+
+def genotype_signal(frames):
+    """The first significant genotype contrast, else the first tested one, else None.
+
+    Returns a dict: marker, group_positive, group_negative, mean_positive,
+    mean_negative, p, significant. Contrasts without a p-value (too few lines,
+    untestable) are skipped.
+    """
+    tested = []
+    for key, marker, pos, neg, pos_col, neg_col, p_col in GENOTYPE_CONTRASTS:
         df = frames.get(key)
-        if df is None or len(df) == 0:
+        if df is None or len(df) == 0 or p_col not in df.columns:
             continue
         row = df.iloc[0]
-        pval = row.get(pval_col)
-        if pval is not None and not (isinstance(pval, float) and math.isnan(pval)):
-            return (key.replace("_contrast", "").replace("_overall", ""),
-                    f"p={float(pval):.2e}")
-    df = frames.get("fusion_contrast")
-    if df is not None and len(df) > 0:
-        status = str(df.iloc[0].get("status", ""))
-        if status and status != "untestable":
-            return ("fusion", status)
-    return (None, None)
+        p = row.get(p_col)
+        if p is None or (isinstance(p, float) and math.isnan(p)):
+            continue
+        if marker == "mutation":
+            pos = f"{row['marker_gene']} {row['marker_kind']} {pos}"
+            neg = f"{row['marker_gene']} {neg}"
+        mean_pos, mean_neg = float(row[pos_col]), float(row[neg_col])
+        tested.append({
+            "marker": marker, "group_positive": pos, "group_negative": neg,
+            "mean_positive": mean_pos, "mean_negative": mean_neg, "p": float(p),
+            "significant": float(p) < GENOTYPE_ALPHA and mean_pos < mean_neg,
+        })
+    significant = [g for g in tested if g["significant"]]
+    return (significant or tested or [None])[0]
+
+
+def genotype_sentence(g):
+    """Plain-language statement of a genotype contrast."""
+    if g["significant"]:
+        return (
+            f"{g['group_positive']} lines are more dependent than {g['group_negative']} "
+            f"lines (mean gene effect {g['mean_positive']:.3f} vs "
+            f"{g['mean_negative']:.3f}, p = {g['p']:.2e})."
+        )
+    return (
+        f"{g['group_positive']} lines are not significantly more dependent than "
+        f"{g['group_negative']} lines (p = {g['p']:.2e})."
+    )
 
 
 def build_verdict(depmap_frames, ot_frames):
@@ -292,7 +365,7 @@ def build_verdict(depmap_frames, ot_frames):
     lin = depmap_frames["lineage_enrichment"]
 
     gene = str(sel.iloc[0]["gene"])
-    classification = str(sel.iloc[0]["classification"])
+    classification, _ = classification_role(sel)
     frac_dependent = float(sel.iloc[0]["frac_dependent"])
 
     # A lineage only counts as a candidate dependency if the knockout effect
@@ -321,7 +394,7 @@ def build_verdict(depmap_frames, ot_frames):
     top_lineage = str(top["lineage"]) if top is not None else None
     top_lineage_p_bh = float(top["p_bh"]) if top is not None else None
 
-    marker_name, marker_detail = pick_genotype_marker(depmap_frames)
+    g = genotype_signal(depmap_frames) or {}
 
     tract = ot_frames.get("tractability", pd.DataFrame())
     if len(tract) > 0:
@@ -340,15 +413,39 @@ def build_verdict(depmap_frames, ot_frames):
 
     safety = ot_frames.get("safety", pd.DataFrame())
 
+    # Direction of effect, carried alongside the classification so a reader
+    # never sees frac_dependent without the sign that gives it meaning. For a
+    # growth-suppressing gene frac_dependent is a true but misleading near-zero:
+    # the finding is the positive tail, not the absent negative one.
+    mean_effect = float(sel.iloc[0]["mean_effect"])
+    frac_positive = (
+        float(sel.iloc[0]["frac_positive"]) if "frac_positive" in sel.columns else None
+    )
+    if classification == "growth-suppressing":
+        effect_direction = "knockout increases proliferation"
+    elif mean_effect < 0:
+        effect_direction = "knockout reduces proliferation"
+    else:
+        effect_direction = "no consistent direction"
+
     return pd.DataFrame([{
         "gene": gene,
         "classification": classification,
+        "effect_direction": effect_direction,
+        "mean_effect": mean_effect,
         "frac_dependent": frac_dependent,
+        "frac_positive": frac_positive,
+        "dependency_framework_applies": classification != "growth-suppressing",
         "top_lineage": top_lineage,
         "top_lineage_p_bh": top_lineage_p_bh,
         "top_lineage_significant": top_lineage_significant,
-        "genotype_marker": marker_name,
-        "genotype_marker_detail": marker_detail,
+        "genotype_marker": g.get("marker"),
+        "genotype_group_positive": g.get("group_positive"),
+        "genotype_group_negative": g.get("group_negative"),
+        "genotype_mean_effect_positive": g.get("mean_positive"),
+        "genotype_mean_effect_negative": g.get("mean_negative"),
+        "genotype_p": g.get("p"),
+        "genotype_significant": g.get("significant"),
         "tractability_modalities": tractability_modalities,
         "max_clinical_stage": max_stage,
         "has_safety_liabilities": bool(len(safety) > 0),
@@ -366,7 +463,10 @@ def find_conflicts(depmap_frames, ot_frames):
     drugs = ot_frames.get("known_drugs", pd.DataFrame())
 
     gene = str(sel.iloc[0]["gene"])
-    classification = str(sel.iloc[0]["classification"])
+    classification, role = classification_role(sel)
+    frac_dependent = float(sel.iloc[0]["frac_dependent"])
+    genotype = genotype_signal(depmap_frames)
+    genotype_sig = genotype is not None and genotype["significant"]
     # A lineage only counts as a dependency if mean_effect < 0 (knockout hurts
     # growth) and frac_dependent > 0 (at least one line actually crosses the
     # threshold) -- see the matching note in build_verdict and
@@ -381,8 +481,48 @@ def find_conflicts(depmap_frames, ot_frames):
     assoc_scored = assoc.dropna(subset=["overall_score"]) if len(assoc) > 0 else assoc
     rows = []
 
+    # 0. Growth-suppressing gene: the dependency framework does not apply.
+    # This takes precedence over rule 1 below. Both fire on the same input (a
+    # high-scoring disease with no significant lineage), but rule 1 attributes
+    # the absent dependency to weak evidence, which is the wrong diagnosis when
+    # knockout is selected FOR. Naming the direction is the finding; reporting
+    # "dependent in 0.4% of lines" as if it bore on druggability is not.
+    is_growth_suppressing = role == "growth-suppressing"
+    if is_growth_suppressing:
+        mean_effect = float(sel.iloc[0]["mean_effect"])
+        frac_pos = float(sel.iloc[0].get("frac_positive", float("nan")))
+        pos_lin = lin[lin["mean_effect"] > 0] if len(lin) > 0 else pd.DataFrame()
+        lin_clause = ""
+        if len(lin) > 0:
+            lin_clause = (
+                f" All {len(lin)} screened lineages show a positive mean effect."
+                if len(pos_lin) == len(lin)
+                else f" {len(pos_lin)} of {len(lin)} screened lineages show a positive mean effect."
+            )
+        ot_obs = "no disease association retrieved"
+        if len(assoc_scored) > 0:
+            _t = assoc_scored.nlargest(1, "overall_score").iloc[0]
+            ot_obs = f"{_t['disease_name']} (score {float(_t['overall_score']):.2f})"
+        rows.append({
+            "conflict_type": "growth_suppressing_gene_not_a_dependency",
+            "observation_depmap": (
+                f"mean gene effect +{mean_effect:.3f}; "
+                f"{frac_pos:.1%} of lines above +0.3"
+            ),
+            "observation_ot": ot_obs,
+            "description": (
+                f"Knocking out {gene} increases proliferation rather than reducing it, so "
+                f"the dependency framework does not apply.{lin_clause} The low "
+                f"fraction of dependent lines is the expected result for a gene whose "
+                f"loss is selected for, not evidence about its value as a target. "
+                f"Inhibiting {gene} is not the therapeutic hypothesis; strategies "
+                f"target the consequences of its loss, or restore its function."
+            ),
+        })
+
     # 1. High-scoring OT disease with no significant DepMap lineage enrichment.
-    if len(assoc_scored) > 0 and len(sig_lin) == 0:
+    # Skipped for a growth-suppressing gene, where rule 0 states the reason.
+    if len(assoc_scored) > 0 and len(sig_lin) == 0 and not is_growth_suppressing:
         top = assoc_scored.nlargest(1, "overall_score").iloc[0]
         if float(top["overall_score"]) > 0.5:
             rows.append({
@@ -399,20 +539,33 @@ def find_conflicts(depmap_frames, ot_frames):
                 ),
             })
 
-    # 2. Common-essential with small-molecule tractability.
-    if classification == "common essential" and len(tract) > 0:
+    # 2. Essential (most lines dependent) with small-molecule tractability. The
+    # genotype clause says whether any tested genotype deepens the dependency,
+    # which is where a window would come from (PELO in MSI-high lines).
+    if role == "essential" and len(tract) > 0:
         sm_true = tract[(tract["modality"] == "SM") & (tract["value"] == True)]
         if len(sm_true) > 0:
             labels = "; ".join(sm_true["label"].tolist())
+            if genotype_sig:
+                genotype_clause = (
+                    " " + genotype_sentence(genotype)
+                    + " A window, if one exists, would come from that difference."
+                )
+            elif genotype is not None:
+                genotype_clause = " " + genotype_sentence(genotype)
+            else:
+                genotype_clause = " No genotype contrast was available."
             rows.append({
-                "conflict_type": "common_essential_with_sm_tractability",
-                "observation_depmap": "common essential (dependent in >=90% of lines)",
+                "conflict_type": "essential_with_sm_tractability",
+                "observation_depmap": (
+                    f"{classification} (dependent in {frac_dependent:.1%} of lines)"
+                ),
                 "observation_ot": f"small-molecule tractability: {labels}",
                 "description": (
-                    f"{gene} is common-essential in DepMap: loss of function reduces "
-                    "viability across nearly all cancer cell lines. Small-molecule "
+                    f"{gene} is {classification} in DepMap: knockout reduces viability "
+                    f"in {frac_dependent:.1%} of cancer cell lines. Small-molecule "
                     "tractability indicates a druggable pocket exists, but a narrow "
-                    "therapeutic window is expected."
+                    "therapeutic window is expected." + genotype_clause
                 ),
             })
 
@@ -432,25 +585,37 @@ def find_conflicts(depmap_frames, ot_frames):
                 ),
             })
 
-    # 4. Selective dependency in one lineage, but top OT disease is not a cancer.
-    if classification == "selective" and len(sig_lin) > 0 and len(assoc_scored) > 0:
+    # 4. A cancer-context dependency, but the top OT disease is not a cancer.
+    # For a selective gene a significant lineage or genotype counts. For an
+    # essential gene only a genotype counts: its lineage enrichment reflects a
+    # slightly deeper mean effect, not a lineage-restricted dependency.
+    signals = []
+    if role == "selective" and len(sig_lin) > 0:
+        top_dep = sig_lin.sort_values("p_bh")["lineage"].head(2).tolist()
+        signals.append("enriched in " + ", ".join(top_dep))
+    if role in ("selective", "essential") and genotype_sig:
+        signals.append(
+            f"{genotype['group_positive']} lines more dependent, "
+            f"p = {genotype['p']:.2e}"
+        )
+    if signals and len(assoc_scored) > 0:
         top_disease = assoc_scored.nlargest(1, "overall_score").iloc[0]
         disease_lower = str(top_disease["disease_name"]).lower()
         if not any(t in disease_lower for t in CANCER_TERMS):
-            top_dep = sig_lin.sort_values("p_bh")["lineage"].head(2).tolist()
             rows.append({
-                "conflict_type": "non_cancer_top_disease_with_selective_dependency",
-                "observation_depmap": "selective, enriched in " + ", ".join(top_dep),
+                "conflict_type": "non_cancer_top_disease_with_cancer_dependency",
+                "observation_depmap": f"{classification}; " + "; ".join(signals),
                 "observation_ot": (
                     f"top disease: {top_disease['disease_name']} "
                     f"(score {float(top_disease['overall_score']):.2f})"
                 ),
                 "description": (
-                    f"{gene} shows selective dependency in DepMap, enriched in "
-                    f"{', '.join(top_dep)}, but the highest-scoring disease in Open "
+                    f"{gene} shows a cancer-context dependency in DepMap "
+                    f"({'; '.join(signals)}), but the highest-scoring disease in Open "
                     f"Targets is {top_disease['disease_name']}, which is not a cancer. "
-                    "The DepMap signal may reflect a synthetic lethal relationship "
-                    "distinct from the gene's primary disease context."
+                    "Open Targets' disease associations do not reflect this dependency; "
+                    "it may be a synthetic lethal relationship distinct from the "
+                    "gene's primary disease context."
                 ),
             })
 
@@ -609,14 +774,32 @@ def write_fusion_readme(out_dir, gene, tables, sources):
 
     v = verdict.iloc[0]
     classification = str(v["classification"])
+    role = CLASSIFICATION_ROLES[classification]
     top_lineage = v["top_lineage"]
     top_lineage_significant = bool(v["top_lineage_significant"])
     max_stage = v["max_clinical_stage"]
     has_safety = bool(v["has_safety_liabilities"])
     tractability = v.get("tractability_modalities")
+    genotype = None
+    if v.get("genotype_marker") and not pd.isna(v.get("genotype_marker")):
+        genotype = {
+            "group_positive": v["genotype_group_positive"],
+            "group_negative": v["genotype_group_negative"],
+            "mean_positive": float(v["genotype_mean_effect_positive"]),
+            "mean_negative": float(v["genotype_mean_effect_negative"]),
+            "p": float(v["genotype_p"]),
+            "significant": bool(v["genotype_significant"]),
+        }
+    genotype_leads = genotype is not None and genotype["significant"]
 
-    # Intro paragraph
-    if top_lineage and top_lineage_significant:
+    # Intro paragraph. A significant genotype contrast leads; otherwise the
+    # top lineage. For an essential gene, lineage enrichment is a deeper mean
+    # effect, not a selective dependency, and is worded that way.
+    if genotype_leads:
+        lineage_clause = ""
+    elif top_lineage and top_lineage_significant and role == "essential":
+        lineage_clause = f", with the deepest mean effect in the {top_lineage} lineage"
+    elif top_lineage and top_lineage_significant:
         lineage_clause = f", with the strongest selective dependency in the {top_lineage} lineage"
     elif top_lineage:
         lineage_clause = (
@@ -625,7 +808,18 @@ def write_fusion_readme(out_dir, gene, tables, sources):
         )
     else:
         lineage_clause = ""
-    intro = f"{gene} is {classification} in DepMap" + lineage_clause + ". "
+    # For a growth-suppressing gene the classification word alone would mislead:
+    # "non-essential in DepMap" invited the reader to treat an absent dependency
+    # as a result about druggability. State the direction in the same sentence.
+    if classification == "growth-suppressing":
+        intro = (
+            f"Knocking out {gene} increases proliferation in DepMap rather than "
+            f"reducing it, so the dependency framework does not apply to it. "
+        )
+    else:
+        intro = f"{gene} is {classification} in DepMap" + lineage_clause + ". "
+    if genotype_leads:
+        intro += genotype_sentence(genotype) + " "
     if max_stage is not None and not (isinstance(max_stage, float) and pd.isna(max_stage)):
         s = int(max_stage)
         intro += (
@@ -659,7 +853,27 @@ def write_fusion_readme(out_dir, gene, tables, sources):
 
     # Dependency
     frac = float(v["frac_dependent"])
-    dep_finding = f"{gene} is {classification} (dependent in {frac:.1%} of screened lines)."
+    if classification == "growth-suppressing":
+        # Lead with the positive tail. Quoting frac_dependent first states a
+        # near-zero that reads as "no signal" when the signal is the other sign.
+        mean_eff = v.get("mean_effect")
+        frac_pos = v.get("frac_positive")
+        dep_finding = (
+            f"Loss of {gene} confers a proliferation advantage in most screened lines"
+        )
+        if mean_eff is not None and not pd.isna(mean_eff):
+            dep_finding += f", with a mean gene effect of +{float(mean_eff):.3f}"
+        if frac_pos is not None and not pd.isna(frac_pos):
+            dep_finding += f" and {float(frac_pos):.1%} of lines above +0.3"
+        dep_finding += (
+            f". Only {frac:.1%} of lines fall below the dependency threshold, which is "
+            f"the expected result for a gene whose loss is selected for rather than "
+            f"evidence that {gene} is a poor target."
+        )
+    else:
+        dep_finding = f"{gene} is {classification} (dependent in {frac:.1%} of screened lines)."
+    if genotype is not None:
+        dep_finding += " " + genotype_sentence(genotype)
     if top_lineage:
         p_bh = v.get("top_lineage_p_bh")
         p_bh_str = (
@@ -667,17 +881,31 @@ def write_fusion_readme(out_dir, gene, tables, sources):
             if p_bh is not None and not (isinstance(p_bh, float) and pd.isna(p_bh))
             else ""
         )
+        # "ranks highest" is qualified with the population it ranks within.
+        # top_lineage is selected only among lineages pointing the dependency
+        # direction (mean_effect < 0 and at least one dependent line), so a
+        # lineage with a lower p_bh can sit outside that set and the bare
+        # phrase reads as a claim about the whole enrichment table. On
+        # MAP3K13, Eye had the lowest p_bh (0.44) with zero dependent lines
+        # while the reported lineage was Ovary/Fallopian Tube at 0.68.
         if top_lineage_significant:
-            dep_finding += f" The {top_lineage} lineage shows the strongest enrichment{p_bh_str}."
+            dep_finding += (
+                f" Among lineages pointing the dependency direction, "
+                f"{top_lineage} shows the strongest enrichment{p_bh_str}."
+            )
+            if role == "essential":
+                dep_finding += (
+                    " Because most lines are dependent, this reflects a deeper mean "
+                    "effect rather than a lineage-restricted dependency."
+                )
         else:
             dep_finding += (
-                f" The {top_lineage} lineage ranks highest{p_bh_str}, "
-                "but does not reach BH-adjusted significance."
+                f" Among lineages pointing the dependency direction, "
+                f"{top_lineage} ranks highest{p_bh_str}, but does not reach "
+                "BH-adjusted significance. A lineage outside that set may "
+                "carry a lower adjusted p-value; see lineage_enrichment.csv "
+                "in the source run."
             )
-    marker = v.get("genotype_marker")
-    if marker:
-        detail = v.get("genotype_marker_detail") or ""
-        dep_finding += f" A {marker} genotype contrast was run ({detail})."
 
     lin_step = {"name": "Dependency", "finding": dep_finding}
     if len(lin_enrich) > 0:
@@ -834,7 +1062,6 @@ def ensure_depmap_run(gene, reuse=True, max_age_days=None, root=None,
     reuse=True checks for an existing complete run first. dry_run=True reports
     what would be run without executing.
     """
-    from lib.common.paths import results_dir
     if reuse:
         existing = find_depmap_run(gene, max_age_days=max_age_days,
                                    results_base=results_base)
@@ -909,7 +1136,6 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
     `max_age_days` defaults to OT_DEFAULT_MAX_AGE_DAYS through an explicit
     None check rather than in the signature; see find_open_targets_run.
     """
-    from lib.common.paths import results_dir
     max_age_days = OT_DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
     if reuse:
         existing = find_open_targets_run(gene, max_age_days=max_age_days,
@@ -951,7 +1177,7 @@ def ensure_open_targets_run(gene, reuse=True, max_age_days=None,
         tables = {
             "identity": ok.identity_table(data),
             "associations": ok.associations_table(data),
-            "genetic_evidence": ok.genetic_evidence_table(data),
+            "top_association_genetic_scores": ok.top_association_genetic_scores_table(data),
             "known_drugs": ok.known_drugs_table(data),
             "tractability": ok.tractability_table(data),
             "safety": ok.safety_table(data),
@@ -998,7 +1224,6 @@ def run_depmap_ot_fusion(gene, reuse=True, max_age_days=None,
     `max_age_days` defaults to OT_DEFAULT_MAX_AGE_DAYS through an explicit
     None check rather than in the signature; see find_open_targets_run.
     """
-    from lib.common.paths import results_dir
     max_age_days = OT_DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
     gene_upper = gene.upper()
 

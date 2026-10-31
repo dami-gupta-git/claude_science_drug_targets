@@ -95,19 +95,21 @@ VALID_CLAIM = {
     "claim_id": "C1", "gene": "WRN", "claim_type": "disease_association",
     "entity": "microsatellite-instable cancer", "direction": "positive",
     "evidence_text": "WRN is selectively essential in MSI cancer cell lines.",
-    "pmid": "38012345", "url": "https://europepmc.org/article/MED/38012345",
+    "source_id": "MED/38012345",
 }
 
 
 def test_claims_table_valid_row():
-    df = kernel.claims_table([VALID_CLAIM])
+    df = kernel.claims_table([VALID_CLAIM], [HIT_MED])
     assert len(df) == 1
     assert list(df.columns) == kernel.CLAIM_COLUMNS
     assert df.iloc[0]["claim_type"] == "disease_association"
+    assert df.iloc[0]["pmid"] == "38012345"
+    assert df.iloc[0]["url"] == "https://europepmc.org/article/MED/38012345"
 
 
 def test_claims_table_empty():
-    df = kernel.claims_table([])
+    df = kernel.claims_table([], [])
     assert len(df) == 0
     assert list(df.columns) == kernel.CLAIM_COLUMNS
 
@@ -115,13 +117,26 @@ def test_claims_table_empty():
 def test_claims_table_missing_field_raises():
     bad = {**VALID_CLAIM, "evidence_text": ""}
     with pytest.raises(ValueError, match="missing required field"):
-        kernel.claims_table([bad])
+        kernel.claims_table([bad], [HIT_MED])
 
 
 def test_claims_table_bad_claim_type_raises():
     bad = {**VALID_CLAIM, "claim_type": "vibes"}
     with pytest.raises(ValueError, match="not in"):
-        kernel.claims_table([bad])
+        kernel.claims_table([bad], [HIT_MED])
+
+
+def test_claims_table_unknown_source_raises():
+    stray = {**VALID_CLAIM, "source_id": "MED/99999999"}
+    with pytest.raises(ValueError, match="not in the retrieved"):
+        kernel.claims_table([stray], [HIT_MED])
+
+
+def test_claims_table_non_verbatim_evidence_raises():
+    paraphrased = {**VALID_CLAIM,
+                   "evidence_text": "WRN is essential in MSI cancers."}
+    with pytest.raises(ValueError, match="verbatim"):
+        kernel.claims_table([paraphrased], [HIT_MED])
 
 
 SAMPLE_STEPS = [
@@ -135,7 +150,7 @@ SAMPLE_STEPS = [
 def test_write_run(tmp_path):
     written = kernel.write_run([HIT_MED], [VALID_CLAIM], tmp_path, "WRN",
                                "Summary.", SAMPLE_STEPS)
-    assert set(written) == {"publications", "claims", "readme"}
+    assert set(written) == {"publications", "claims", "retrieval", "readme"}
     for path in written.values():
         assert path.is_file()
     readme = written["readme"].read_text()

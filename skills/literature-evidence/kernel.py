@@ -28,7 +28,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import NamedTuple
 
 import pandas as pd
 
@@ -192,31 +191,16 @@ def raise_if_sort_at_fault(query: str, sort: str, page_size: int,
         )
 
 
-class PassInfo(NamedTuple):
-    """What one retrieval pass asked for and what came back."""
-    label: str
-    query: str
-    sort: str | None
-    requested: int
-    returned: int
-    year_min: int | None
-    year_max: int | None
-
-
-class Retrieval(NamedTuple):
-    """Records plus the provenance of how they were retrieved.
-
-    search_balanced returns this so write_run can write retrieval.json
-    without the caller having to remember what it asked for. Unpack it:
-
-        hits, retrieval = search_balanced("WRN")
-    """
-    hits: list[dict]
-    passes: list[PassInfo]
-    retrieved_at: str
+# A retrieval pass and a whole retrieval are plain dicts, not NamedTuples:
+# the sidecar gate allows no class definitions at module scope. Dict keys
+# are the former field names, so retrieval.json is unchanged.
+#
+# pass keys:      label, query, sort, requested, returned, year_min, year_max
+# retrieval keys: hits, passes, retrieved_at
 
 
 def year_span(hits: list[dict]) -> tuple[int | None, int | None]:
+    """Earliest and latest pubYear among hits, or (None, None) if none parse."""
     years = []
     for hit in hits:
         try:
@@ -226,13 +210,37 @@ def year_span(hits: list[dict]) -> tuple[int | None, int | None]:
     return (min(years), max(years)) if years else (None, None)
 
 
+def pass_info(label, query, sort, requested, returned, year_min, year_max):
+    """One retrieval pass: what it asked for and what came back."""
+    return {"label": label, "query": query, "sort": sort,
+            "requested": requested, "returned": returned,
+            "year_min": year_min, "year_max": year_max}
+
+
+def retrieval_record(hits, passes, retrieved_at):
+    """Records plus the provenance of how they were retrieved.
+
+    search_balanced returns this so write_run can write retrieval.json
+    without the caller having to remember what it asked for. Access it by
+    key:
+
+        result = search_balanced("WRN")
+        hits = result["hits"]
+
+    Note it is not a 2-tuple: an earlier version of this docstring showed
+    `hits, retrieval = search_balanced(...)`, which raised ValueError
+    because the record carries three fields, not two.
+    """
+    return {"hits": hits, "passes": passes, "retrieved_at": retrieved_at}
+
+
 def search_balanced(gene: str, extra_terms: str | None = None,
                     recent: int = 20, landmark: int = 10,
                     include_preprints: bool = True,
-                    timeout: int = 60) -> Retrieval:
+                    timeout: int = 60) -> dict:
     """Records from two passes - newest first, then most cited - merged.
 
-    Returns a Retrieval: (hits, passes, retrieved_at). Unpack it as
+    Returns a dict with keys hits, passes and retrieved_at. Pass it to
     `hits, retrieval = search_balanced(...)` and hand retrieval to
     write_run, which writes it to retrieval.json. Recording the query,
     sort and year span alongside the records is what lets a later reader
@@ -277,7 +285,7 @@ def search_balanced(gene: str, extra_terms: str | None = None,
         found = search_europepmc(query, page_size=n, max_pages=1,
                                  timeout=timeout, sort=sort_key)
         year_min, year_max = year_span(found)
-        infos.append(PassInfo(label, query, sort_key, n, len(found),
+        infos.append(pass_info(label, query, sort_key, n, len(found),
                               year_min, year_max))
         for hit in found:
             key = (hit.get("source"), hit.get("id"))
@@ -288,7 +296,7 @@ def search_balanced(gene: str, extra_terms: str | None = None,
                 hit["retrieval_pass"] = label
                 out[key] = hit
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    return Retrieval(list(out.values()), infos, stamp)
+    return retrieval_record(list(out.values()), infos, stamp)
 
 
 # --- text normalisation and verbatim checking -------------------------
@@ -472,7 +480,7 @@ def claims_table(claim_rows: list[dict], hits: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(enriched, columns=CLAIM_COLUMNS)
 
 
-def retrieval_manifest(hits: list[dict], retrieval: Retrieval | None,
+def retrieval_manifest(hits: list[dict], retrieval: dict | None,
                        gene: str) -> dict:
     """What was asked of Europe PMC and what came back."""
     year_min, year_max = year_span(hits)
@@ -483,8 +491,8 @@ def retrieval_manifest(hits: list[dict], retrieval: Retrieval | None,
         by_pass[label] = by_pass.get(label, 0) + 1
     return {
         "gene": gene,
-        "retrieved_at": retrieval.retrieved_at if retrieval else None,
-        "passes": [p._asdict() for p in retrieval.passes] if retrieval else [],
+        "retrieved_at": retrieval["retrieved_at"] if retrieval else None,
+        "passes": list(retrieval["passes"]) if retrieval else [],
         "records": {
             "total": len(hits),
             "year_min": year_min,
@@ -500,7 +508,7 @@ def write_run(hits: list[dict], claim_rows: list[dict], out_dir: Path,
               subject: str, summary: str, steps: list[dict],
               source: str = "Europe PMC",
               limits: list[str] | None = None,
-              retrieval: Retrieval | None = None) -> dict[str, Path]:
+              retrieval: dict | None = None) -> dict[str, Path]:
     """Write publications.csv, claims.csv, retrieval.json and README.md.
 
     Claims from preprints go to claims_preprint.csv. Both files are built

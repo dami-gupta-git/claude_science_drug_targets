@@ -28,7 +28,7 @@ description: Build a target dossier from four sources - Open Targets (identity, 
   `depmap-local`. Needs `$DEPMAP_ROOT`.
 - Invoke `docs-style` before writing findings.
 - `write_run(data, out, subject, summary, steps, gnomad=..., cbioportal=...,
-  msi_dose=...)` writes the six Open Targets CSVs plus a CSV per supplied
+  msi_dose=...)` writes the seven Open Targets CSVs plus a CSV per supplied
   section, then README.md.
 
 ## Writing findings
@@ -41,11 +41,18 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
   evidence datatypes by Open Targets; higher means stronger evidence.
   Do not quote scores in the summary paragraph - define the scale once
   in the finding text, then let the table carry the values.
+- **Genetic scores**: `top_association_genetic_scores.csv` covers only
+  the top associations (see `top_association_genetic_scores_table`). Do
+  not present it as where the gene's genetic support lies.
 - **Tractability**: name the specific labels where `value` is True (e.g.
   "Small-molecule structural evidence, PROTAC criteria"). Do not report
   True/False counts or row totals - they carry no meaning to a reader.
 - **Drugs**: name drugs and their highest clinical phase; a count alone
-  is not a finding.
+  is not a finding. Build the README drug table from `drug_summary.csv`
+  in its row order (see `drug_summary_table`), never by hand from
+  `known_drugs.csv`. If trimmed, cut from the bottom and state how many
+  drugs were left out. Write "approved per Open Targets", not "approved":
+  its labels lag regulators and miss some regional approvals.
 - **Safety**: if liabilities are recorded, name the events; do not
   summarise as a count. An empty Open Targets safety table is not
   evidence of safety; say what gnomAD constraint shows instead.
@@ -81,14 +88,51 @@ Follow the prose-vs-tables rule in `docs-style`. Source-specific guidance:
 
 ## Verify
 
-- Six Open Targets CSVs land in the run directory, plus two or three
+- Seven Open Targets CSVs land in the run directory, plus two or three
   per supplied section.
+- Every APPROVED drug in `drug_summary.csv` appears in the README drug
+  table.
 - `identity.csv` has exactly one row matching the requested gene;
   `associations.csv` has at most 20.
 - Every `sample_id` in `tumour_mutations.csv` belongs to a study listed
   in `tumour_cohort.csv`, and `n_msi_high_mutated` never exceeds
   `n_msi_high_samples`.
+- `associations.csv` is capped at the query's page size, currently 20, ordered
+  by descending score — the strongest associations, not all of them. WRN has
+  1,002. Every run writes `association_coverage.csv` with the true total and a
+  `truncated` flag; quote it whenever you characterise what a gene is
+  associated with, or the table reads as a survey when it is a top slice. The
+  cap loses the tail rather than a random sample, so "the top associations are
+  X" is supportable and "the gene is associated with X diseases" is not.
 - `gnomad_lof_variants.csv` contains only `lof == HC` rows.
+- The two gnomAD counts differ and both are correct: `obs_lof` in
+  `gnomad_constraint.csv` is the constraint model's count on one canonical
+  transcript excluding flagged variants, while `gnomad_lof_variants.csv` keeps
+  every high-confidence call across the gene. Say which you mean when quoting
+  one; adjacent in a sentence they read as a contradiction. Both tables carry
+  `reference_genome`, and variant ids are coordinates on that build — state it,
+  because the same id means a different position on another assembly.
+- When the question is "is residue X mutated in these tumours", pass
+  `test_positions={label: position}` to `fetch_cbioportal_msi_cohort`. It raises
+  if any tested position falls outside every `residue_range`. Without it the
+  wrong answer is silent rather than absent: an uncovered position is labelled
+  outside the named ranges, dropped from `n_msi_high_in_range`, and the run reads
+  as evidence of absence. Annotated domains are the trap — they do not tile the
+  sequence, so a residue in an unannotated stretch between two domains is
+  invisible. Either tile the full sequence with explicit unannotated blocks, or
+  query resistance windows and domains as two separate passes and write both
+  tables.
+- `residue_range_hit` returns the FIRST matching range, so overlapping ranges
+  hide all but one label. Two passes, not one merged dict, when a residue belongs
+  to both a resistance window and a domain.
+- An absence result over a bulk-sequenced cohort is bounded by detection, not by
+  sample size. Call `clonality_floor(mutations_table)` and quote it: the claim
+  supported is that no allele is clonal or near-clonal, since a subclonal variant
+  falls below the calling floor and pre-existing resistance is characteristically
+  subclonal. Sample size is the looser bound and the tempting one to cite.
+- The cohort table's `n_msi_high_in_range` counts SAMPLES; the mutation table
+  counts MUTATIONS, and a sample can carry several. Label whichever appears in
+  prose, and never compare one against the other.
 - A study scored by two MSI attributes contributes one mutation row per
   attribute; deduplicate on study, sample and protein change before
   counting mutations across attributes.

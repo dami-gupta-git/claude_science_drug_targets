@@ -24,7 +24,24 @@ NODE_COLUMNS = ["node_id", "node_type", "label"]
 EDGE_COLUMNS = [
     "edge_id", "subject_id", "predicate", "object_id",
     "source_skill", "source_subject", "source_run", "evidence_ref", "score",
+    "support_p", "support_kind",
 ]
+
+# `score` holds a different, incomparable quantity per predicate: an Open
+# Targets association score for associated_with, a dependent fraction for
+# dependency_in_lineage, and nothing at all for targeted_by_drug. It is
+# therefore not orderable across predicates and must never be used to rank or
+# compare edges of different kinds.
+#
+# `support_p` is the statistical support where one exists - a BH-adjusted
+# p-value for dependency edges - promoted out of the free-text `evidence_ref`
+# field, which also carries URLs and PMIDs and so cannot be parsed as a
+# number. `support_kind` names what the p-value is, or the reason there is
+# none. Query functions filter on support_p; nothing should reach into
+# evidence_ref to recover it.
+SUPPORT_KIND_BH = "bh_adjusted_p"
+SUPPORT_KIND_NONE = "no_statistical_test"
+SUPPORT_ALPHA = 0.05
 
 # depmap-local surfaces lineage (tissue/cancer-type) dependency, not pathway
 # membership - "pathway" from the original four-skill plan is realized as
@@ -56,13 +73,30 @@ def make_node(node_type: str, label: str) -> dict:
 
 def make_edge(subject_id: str, predicate: str, object_id: str, source_skill: str,
              source_subject: str, source_run: str, evidence_ref: str = None,
-             score: float = None) -> dict:
+             score: float = None, support_p=None,
+             support_kind: str = None) -> dict:
+    """One edge row. `support_p` is the statistical support, not `score`.
+
+    Pass `support_p` with a `support_kind` naming what it is whenever the
+    source run computed a test. Leave both unset when it did not, and the
+    edge is recorded as untested rather than as supported - an edge with no
+    p-value must not read as a strong one.
+    """
     edge_id = "|".join([subject_id, predicate, object_id, source_run])
+    if support_p is not None and not support_kind:
+        raise ValueError("support_p given without support_kind: a bare number "
+                         "cannot be interpreted downstream")
+    try:
+        support_p = None if support_p is None else float(support_p)
+    except (TypeError, ValueError):
+        support_p = None
     return {
         "edge_id": edge_id, "subject_id": subject_id, "predicate": predicate,
         "object_id": object_id, "source_skill": source_skill,
         "source_subject": source_subject, "source_run": source_run,
         "evidence_ref": evidence_ref, "score": score,
+        "support_p": support_p,
+        "support_kind": support_kind or SUPPORT_KIND_NONE,
     }
 
 
@@ -149,7 +183,8 @@ def ingest_depmap_local(gene: str, run_dir: Path) -> tuple:
         edges.append(make_edge(
             gene_id, "dependency_in_lineage", lineage_node["node_id"],
             "depmap-local", gene.lower(), source_run,
-            evidence_ref=row.get("p_bh"), score=frac_dependent))
+            evidence_ref=row.get("p_bh"), score=frac_dependent,
+            support_p=row.get("p_bh"), support_kind=SUPPORT_KIND_BH))
 
     return nodes, edges
 
@@ -254,19 +289,61 @@ def merge_into_store(nodes_df: pd.DataFrame, edges_df: pd.DataFrame, source_skil
            "edges_added": len(edges_df)}
 
 
-def query_neighbors(node_id_: str, edges_df: pd.DataFrame) -> pd.DataFrame:
-    """Edges touching node_id_ on either side."""
-    return edges_df[(edges_df["subject_id"] == node_id_) |
+def query_neighbors(node_id_: str, edges_df: pd.DataFrame,
+                    alpha: float = None) -> pd.DataFrame:
+    """Edges touching node_id_ on either side.
+
+    Unfiltered by default, because listing a node's neighbourhood is a
+    different question from asserting a connection - but read `support_p`
+    before quoting any row: most dependency edges in a typical store do not
+    survive multiple-testing correction. Pass `alpha` to drop those, and note
+    that `score` is not comparable across predicates, so the returned rows
+    cannot be ranked by it.
+    """
+    hits = edges_df[(edges_df["subject_id"] == node_id_) |
                     (edges_df["object_id"] == node_id_)]
+    return hits if alpha is None else supported_edges(hits, alpha=alpha)
 
 
-def query_path(from_id: str, to_id: str, edges_df: pd.DataFrame, max_hops: int = 4) -> list:
+def supported_edges(edges_df: pd.DataFrame, alpha: float = 0.05,
+                    keep_untested: bool = True) -> pd.DataFrame:
+    """Edges whose statistical support clears `alpha`, plus untested ones.
+
+    An edge with `support_p` above alpha failed the test its own source run
+    performed, and a route through it is noise presented as a connection. An
+    edge with no `support_p` was never tested - Open Targets association and
+    drug edges carry no p-value - and is kept by default because dropping it
+    would remove most of the graph; pass keep_untested=False to see only
+    edges with positive statistical support.
+    """
+    if "support_p" not in edges_df.columns:
+        raise ValueError(
+            "edges_df has no support_p column: it predates support tracking. "
+            "Re-ingest the source runs, or filter on the p-value in "
+            "evidence_ref yourself and say so in the report")
+    support = pd.to_numeric(edges_df["support_p"], errors="coerce")
+    tested = support.notna()
+    return edges_df[(tested & (support <= alpha)) |
+                    (~tested if keep_untested else False)]
+
+
+def query_path(from_id: str, to_id: str, edges_df: pd.DataFrame,
+               max_hops: int = 4, alpha: float = 0.05) -> list:
     """Shortest undirected node_id path from from_id to to_id, or None.
 
     Breadth-first search over edges_df treated as an undirected graph -
     the predicate direction matters for reading an edge, not for whether
     two nodes are connected.
+
+    Edges failing their own significance test at `alpha` are excluded before
+    the search. Without that filter the shortest path is the wrong answer
+    rather than a weak one: on a store where most dependency edges do not
+    survive multiple-testing correction, BFS returns routes through edges at
+    p near 1.0, and hop count makes such a route look preferable to a longer
+    well-supported one. Pass alpha=1.0 for the unfiltered topology, knowing
+    the result is connectivity and not evidence.
     """
+    edges_df = supported_edges(edges_df, alpha=alpha)
     adjacency = {}
     for _, row in edges_df.iterrows():
         adjacency.setdefault(row["subject_id"], set()).add(row["object_id"])

@@ -9,6 +9,10 @@
 #   - tractability has no id, only label/modality/value.
 #   - associatedDiseases paginates with page:{index,size}.
 #   - safetyLiabilities is often an empty list - absence is not safety.
+#   - drug.parentMolecule links a salt form (TOFACITINIB CITRATE) to its
+#     parent, but also links distinct deuterated drugs (DEURUXOLITINIB
+#     PHOSPHATE -> RUXOLITINIB); see drug_summary_table for the fold rule.
+#     Confirmed live on TYK2 (ENSG00000105397).
 
 query TargetDossier($ensemblId: String!) {
   target(ensemblId: $ensemblId) {
@@ -29,6 +33,10 @@ query TargetDossier($ensemblId: String!) {
           id
           name
           drugType
+          parentMolecule {
+            id
+            name
+          }
           mechanismsOfAction {
             rows {
               actionType

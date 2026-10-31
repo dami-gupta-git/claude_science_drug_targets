@@ -9,6 +9,19 @@ import re
 # missing value raises rather than silently trying one developer's path.
 DEPMAP_ROOT = None
 DEP_THRESHOLD = -0.5
+# Fraction of lines below DEP_THRESHOLD. At or above BROADLY_ESSENTIAL_FRAC most
+# lines are dependent, which contradicts "selective" (most lines unaffected).
+COMMON_ESSENTIAL_FRAC = 0.90
+BROADLY_ESSENTIAL_FRAC = 0.50
+# Every label depmap_selectivity can emit. Downstream skills key rules on these.
+CLASSIFICATIONS = ("common essential", "broadly essential", "selective",
+                   "growth-suppressing", "non-essential")
+# Positive tail. A gene effect above POS_EFFECT means knockout increased
+# proliferation in that line. POS_THRESHOLD is the fraction of lines that must
+# clear it before a gene is called growth-suppressing; see depmap_selectivity
+# for how both values were calibrated against the genome-wide background.
+POS_EFFECT = 0.3
+POS_THRESHOLD = 0.10
 CACHE_DIRNAME = "_cache"
 
 
@@ -197,7 +210,36 @@ def depmap_gene_effect(genes, root=None, dataset="effect"):
 
 
 def depmap_selectivity(gene, root=None):
-    """Classify a gene's dependency profile: common-essential / selective / non-essential."""
+    """Classify a gene's dependency profile.
+
+    Returns one of five classifications. The first four describe how often
+    knockout kills; `growth-suppressing` describes the opposite direction and
+    exists because the other four cannot express it.
+
+    `broadly essential` covers genes dependent in most lines but short of the
+    common-essential cut. Without it, `selective` spanned 2% to 90% of lines
+    and labelled PELO (86% dependent) the same as WRN (7%).
+
+    The dependency question ("how often does knockout fall below
+    DEP_THRESHOLD") is one-sided. Run on a gene whose loss is selected for,
+    it returns a true but misleading null: TP53 is dependent in 0.4% of
+    lines, which reads as "not a target" when the finding is that knockout
+    confers a proliferation advantage in most lines (mean effect +0.42,
+    41.9% of lines above POS_THRESHOLD). Reporting only the negative tail
+    describes a tumour suppressor as an ordinary non-hit.
+
+    `growth-suppressing` is therefore decided on the POSITIVE tail, and takes
+    precedence over `non-essential` when both apply. It is a statement about
+    the data, not a gene label: APC, STK11 and VHL are tumour suppressors by
+    annotation but genuine dependencies in this screen (VHL is below
+    DEP_THRESHOLD in 77% of lines), and they classify as dependencies here,
+    which is correct.
+
+    POS_THRESHOLD (0.10 of lines above +0.3) is set from the genome-wide
+    background: in a 579-gene random sample the median gene has 0.75% of
+    lines above +0.3 and only ~2% of genes reach 10%, so this fires in the
+    top few percent of the positive tail rather than on ordinary noise.
+    """
     import numpy as np
     import pandas as pd
     eff = depmap_gene_effect(gene, root=root)
@@ -205,10 +247,15 @@ def depmap_selectivity(gene, root=None):
         raise KeyError("gene %s not in CRISPR matrix" % gene)
     v = eff[gene].dropna()
     frac = float((v < DEP_THRESHOLD).mean())
-    if frac >= 0.90:
+    frac_pos = float((v > POS_EFFECT).mean())
+    if frac >= COMMON_ESSENTIAL_FRAC:
         cls = "common essential"
+    elif frac >= BROADLY_ESSENTIAL_FRAC:
+        cls = "broadly essential"
     elif frac >= 0.02:
         cls = "selective"
+    elif frac_pos >= POS_THRESHOLD and float(v.mean()) > 0:
+        cls = "growth-suppressing"
     else:
         cls = "non-essential"
     return pd.DataFrame([{
@@ -217,7 +264,7 @@ def depmap_selectivity(gene, root=None):
         "pct05_effect": round(float(np.percentile(v, 5)), 3),
         "frac_dependent": round(frac, 4), "n_dependent": int((v < DEP_THRESHOLD).sum()),
         "sd_effect": round(float(v.std()), 3),
-        "frac_positive": round(float((v > 0.3).mean()), 4),
+        "frac_positive": round(frac_pos, 4),
         "p95_effect": round(float(np.percentile(v, 95)), 3),
         "classification": cls,
     }])
@@ -542,6 +589,21 @@ def depmap_msi_dose_response(gene, root=None, msi_threshold=20.0):
     Spearman, not Pearson: MSIScore is strongly right-skewed (most lines sit
     near zero), so a rank correlation is the one that answers the question
     without a transform chosen after seeing the data.
+
+    Three arms are returned, not two. The MSS arm is the control that makes
+    the comparison readable: a gradient inside the MSI-high arm means little
+    unless the stable arm is flat. On WRN the stable arm is flat (rho 0.000
+    over 1133 lines) while the unstable arm is steep (-0.72 over 75), which
+    is a two-regime result - a threshold to enter dependency, a gradient
+    once inside - and neither arm alone shows it.
+
+    The pooled arm carries status "not interpretable": over a variable where
+    ~94% of lines sit below the threshold, a pooled rank correlation mixes
+    the between-group step with any within-group gradient and reports
+    neither. On WRN it comes out at -0.086, which is significant at p=0.003
+    only because n=1208 and explains 0.7% of variance against 51.8% within
+    the MSI-high arm. Report the per-arm figures; do not quote the pooled
+    one as evidence for or against a gradient.
     """
     import pandas as pd
     from scipy import stats
@@ -551,34 +613,65 @@ def depmap_msi_dose_response(gene, root=None, msi_threshold=20.0):
     j = pd.concat([eff[gene].rename("effect"), depmap_msi_scores(root=root)],
                   axis=1, join="inner").dropna()
     rows = []
-    for arm, sub in (("all_lines", j),
-                     ("msi_high_only", j[j.MSIScore >= msi_threshold])):
+    arms = (("pooled", j),
+            ("mss_only", j[j.MSIScore < msi_threshold]),
+            ("msi_high_only", j[j.MSIScore >= msi_threshold]))
+    for arm, sub in arms:
         if len(sub) < 3:
             rows.append({"gene": gene, "arm": arm, "n_lines": int(len(sub)),
                          "status": "too few lines"})
             continue
         rho = stats.spearmanr(sub.MSIScore, sub.effect)
+        # r-squared is reported alongside p because n differs ~15x between
+        # arms: at n=1208 a rho of 0.09 clears p<0.05 while explaining under
+        # 1% of variance, so significance alone cannot rank the arms.
+        r2 = float(rho.statistic) ** 2
+        if arm == "pooled":
+            status = "not interpretable"
+        elif rho.pvalue >= 0.05:
+            status = "flat"
+        elif rho.statistic >= 0:
+            status = "inverse"
+        elif r2 < 0.10:
+            status = "significant but weak"
+        else:
+            status = "graded"
         rows.append({
             "gene": gene, "arm": arm, "n_lines": int(len(sub)),
             "msi_threshold": msi_threshold,
             "msi_score_min": round(float(sub.MSIScore.min()), 2),
             "msi_score_max": round(float(sub.MSIScore.max()), 2),
             "spearman_rho": round(float(rho.statistic), 3),
+            "r_squared": round(r2, 3),
             "p_value": floor_pvalue(rho.pvalue),
-            "status": "graded" if (rho.pvalue < 0.05 and rho.statistic < 0)
-                      else "no graded relationship",
+            "status": status,
         })
     return pd.DataFrame(rows)
 
 
-def depmap_msi_dose_bins(gene, root=None, n_bins=5):
-    """Mean gene effect per MSIScore quantile bin - the dose-response curve.
+def depmap_msi_dose_bins(gene, root=None, n_bins=4, msi_threshold=20.0):
+    """Mean gene effect per MSIScore quantile bin, binned WITHIN each arm.
 
     Companion to depmap_msi_dose_response: the correlation gives one number,
     this shows the shape, which is what separates a gradient from a step at
-    one score. Bins are quantiles of MSIScore, so each holds a similar number
-    of lines despite the skew; fewer bins are returned when ties collapse
-    quantile edges.
+    one score.
+
+    Bins are quantiles computed separately inside the MSS and MSI-high arms,
+    and the returned frame carries an `arm` column. Binning across the whole
+    panel - which this function used to do - cannot answer the question it
+    was written for. On a DepMap-scale panel roughly 94% of lines sit below
+    the MSI threshold, so whole-panel quantiles put every MSI-high line in
+    the top bin: the output is flat-then-step whatever the true shape is,
+    including when a clean gradient exists above the threshold. On WRN it
+    produced four bins at 3-5% dependent and one at 19.7%, which reads as a
+    pure threshold and contradicted the -0.72 within-arm correlation from
+    the same data. Binning within arms shows both effects at once: the MSS
+    quartiles are flat (mean effect spread 0.02) while the MSI-high
+    quartiles fall monotonically (spread 1.58).
+
+    Read the two arms separately. A flat MSS arm plus a monotonic MSI-high
+    arm is a threshold for entry followed by a gradient, which is a
+    different claim from either "graded" or "switch" alone.
     """
     import pandas as pd
     eff = depmap_gene_effect(gene, root=root)
@@ -586,21 +679,27 @@ def depmap_msi_dose_bins(gene, root=None, n_bins=5):
         raise KeyError("gene %s not in CRISPR matrix" % gene)
     j = pd.concat([eff[gene].rename("effect"), depmap_msi_scores(root=root)],
                   axis=1, join="inner").dropna()
-    if len(j) < n_bins:
-        return pd.DataFrame(columns=["gene", "bin", "n_lines"])
-    j["bin"] = pd.qcut(j.MSIScore, q=n_bins, duplicates="drop")
     rows = []
-    for name, g in j.groupby("bin", observed=True):
-        rows.append({
-            "gene": gene,
-            "bin": str(name),
-            "msi_score_min": round(float(g.MSIScore.min()), 2),
-            "msi_score_max": round(float(g.MSIScore.max()), 2),
-            "n_lines": int(len(g)),
-            "mean_effect": round(float(g.effect.mean()), 3),
-            "median_effect": round(float(g.effect.median()), 3),
-            "frac_dependent": round(float((g.effect < DEP_THRESHOLD).mean()), 3),
-        })
+    arms = (("mss", j[j.MSIScore < msi_threshold]),
+            ("msi_high", j[j.MSIScore >= msi_threshold]))
+    for arm, sub in arms:
+        if len(sub) < n_bins:
+            continue
+        sub = sub.copy()
+        sub["bin"] = pd.qcut(sub.MSIScore, q=n_bins, duplicates="drop")
+        for rank, (name, g) in enumerate(sub.groupby("bin", observed=True), 1):
+            rows.append({
+                "gene": gene,
+                "arm": arm,
+                "quantile": rank,
+                "bin": str(name),
+                "msi_score_min": round(float(g.MSIScore.min()), 2),
+                "msi_score_max": round(float(g.MSIScore.max()), 2),
+                "n_lines": int(len(g)),
+                "mean_effect": round(float(g.effect.mean()), 3),
+                "median_effect": round(float(g.effect.median()), 3),
+                "frac_dependent": round(float((g.effect < DEP_THRESHOLD).mean()), 3),
+            })
     return pd.DataFrame(rows)
 
 

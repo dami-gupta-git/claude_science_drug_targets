@@ -1,5 +1,6 @@
 import csv
 
+import pandas as pd
 import pytest
 
 import kernel
@@ -163,6 +164,64 @@ def test_query_path_unreachable_returns_none():
         kernel.make_edge("GENE:a", "interacts_with", "GENE:b", "literature-evidence", "a", "r1"),
     ])
     assert kernel.query_path("GENE:a", "DISEASE:nowhere", edges) is None
+
+
+def test_make_edge_records_untested_by_default():
+    edge = kernel.make_edge("GENE:a", "associated_with", "DISEASE:c",
+                            "target-evidence", "a", "r1", score=0.8)
+    assert edge["support_p"] is None
+    assert edge["support_kind"] == kernel.SUPPORT_KIND_NONE
+
+
+def test_make_edge_support_p_requires_kind():
+    with pytest.raises(ValueError, match="support_kind"):
+        kernel.make_edge("GENE:a", "dependency_in_lineage", "LINEAGE:bowel",
+                         "depmap-local", "a", "r1", support_p=0.01)
+
+
+def test_query_path_skips_edges_failing_their_own_test():
+    # a->b->c is two hops through an edge at p=0.9; a->d->e->c is three hops,
+    # all supported. Hop count alone would return the unsupported route.
+    edges = kernel.edges_table([
+        kernel.make_edge("GENE:a", "dependency_in_lineage", "LINEAGE:b",
+                         "depmap-local", "a", "r1", support_p=0.9,
+                         support_kind=kernel.SUPPORT_KIND_BH),
+        kernel.make_edge("LINEAGE:b", "dependency_in_lineage", "DISEASE:c",
+                         "depmap-local", "b", "r1", support_p=0.9,
+                         support_kind=kernel.SUPPORT_KIND_BH),
+        kernel.make_edge("GENE:a", "dependency_in_lineage", "LINEAGE:d",
+                         "depmap-local", "a", "r1", support_p=0.01,
+                         support_kind=kernel.SUPPORT_KIND_BH),
+        kernel.make_edge("LINEAGE:d", "dependency_in_lineage", "GENE:e",
+                         "depmap-local", "d", "r1", support_p=0.02,
+                         support_kind=kernel.SUPPORT_KIND_BH),
+        kernel.make_edge("GENE:e", "associated_with", "DISEASE:c",
+                         "target-evidence", "e", "r1"),
+    ])
+    assert kernel.query_path("GENE:a", "DISEASE:c", edges) == [
+        "GENE:a", "LINEAGE:d", "GENE:e", "DISEASE:c"]
+    # alpha=1.0 restores the raw topology and the shorter unsupported route
+    assert kernel.query_path("GENE:a", "DISEASE:c", edges, alpha=1.0) == [
+        "GENE:a", "LINEAGE:b", "DISEASE:c"]
+
+
+def test_supported_edges_keeps_untested_by_default():
+    edges = kernel.edges_table([
+        kernel.make_edge("GENE:a", "associated_with", "DISEASE:c",
+                         "target-evidence", "a", "r1"),
+        kernel.make_edge("GENE:a", "dependency_in_lineage", "LINEAGE:b",
+                         "depmap-local", "a", "r1", support_p=0.9,
+                         support_kind=kernel.SUPPORT_KIND_BH),
+    ])
+    assert len(kernel.supported_edges(edges)) == 1
+    assert len(kernel.supported_edges(edges, keep_untested=False)) == 0
+
+
+def test_supported_edges_raises_on_legacy_store():
+    legacy = pd.DataFrame([{"subject_id": "GENE:a", "predicate": "x",
+                            "object_id": "GENE:b", "evidence_ref": "0.9"}])
+    with pytest.raises(ValueError, match="predates support tracking"):
+        kernel.supported_edges(legacy)
 
 
 def test_write_sync_report(tmp_path, monkeypatch):

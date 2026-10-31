@@ -147,7 +147,7 @@ def resolve_cbioportal_gene(gene: str, timeout: int = 60) -> int:
 
 
 def fetch_cbioportal_expression(entrez_gene_id: int,
-                                studies: dict = CANCER_TYPE_STUDIES,
+                                studies: dict = None,
                                 timeout: int = 60) -> dict:
     """Per-sample expression values for entrez_gene_id in each study.
 
@@ -156,6 +156,8 @@ def fetch_cbioportal_expression(entrez_gene_id: int,
     than raising, since PanCancer Atlas naming isn't guaranteed forever -
     the caller sees fewer studies in the output, not a crashed run.
     """
+    if studies is None:
+        studies = CANCER_TYPE_STUDIES
     results = {}
     for study_id in studies:
         profile_id = "%s_rna_seq_v2_mrna" % study_id
@@ -181,9 +183,15 @@ def fetch_cbioportal_expression(entrez_gene_id: int,
 
 
 def tumor_expression_table(study_values: dict,
-                           studies: dict = CANCER_TYPE_STUDIES) -> pd.DataFrame:
+                           studies: dict = None) -> pd.DataFrame:
     """One row per cancer type with data, classified against the gene's
-    own median across the studies present in study_values."""
+    own median across the studies present in study_values.
+
+    studies defaults to CANCER_TYPE_STUDIES, resolved in the body because
+    the sidecar gate rejects a non-literal default.
+    """
+    if studies is None:
+        studies = CANCER_TYPE_STUDIES
     medians = {sid: statistics.median(vals) for sid, vals in study_values.items()}
     reference = statistics.median(medians.values()) if medians else None
     rows = []

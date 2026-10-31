@@ -26,7 +26,7 @@ Step-by-step when you need finer control:
 
 ## Outputs
 
-- `verdict.csv` — one row: dependency classification, top lineage (BH p < 0.05), genotype marker if tested, tractability modalities where True, max clinical stage, safety flag.
+- `verdict.csv` — one row: dependency classification, direction of effect, top lineage (BH p < 0.05), genotype contrast (first significant one, else first tested; see `genotype_signal`), tractability modalities where True, max clinical stage, safety flag. `effect_direction`, `mean_effect` and `frac_positive` sit next to `frac_dependent` so the fraction is never read without the sign that gives it meaning; `dependency_framework_applies` is False for a growth-suppressing gene.
 - `conflicts.csv` — one row per disagreement, with the two observations and a plain-language description. See conflict types below.
 - `disease_lineage.csv` — OT diseases aligned to DepMap lineages by keyword matching. `lineage_status` distinguishes the three cases behind an empty effect column: `matched` (lineage found and screened), `no_lineage_keyword` (disease name matched no lineage), `lineage_not_in_depmap_run` (lineage identified but absent from this gene's enrichment run).
 - `drugs_joined.csv` — OT known drugs joined to PRISM compounds on drug name (case-insensitive). `compound_id` identifies the specific PRISM entry.
@@ -35,10 +35,11 @@ Step-by-step when you need finer control:
 
 ## Conflict types
 
-- `disease_without_lineage_enrichment` — a high-scoring OT disease (score > 0.5) with no DepMap lineage passing BH correction.
-- `common_essential_with_sm_tractability` — common-essential classification alongside small-molecule tractability (indicates a narrow therapeutic window).
+- `growth_suppressing_gene_not_a_dependency` — knockout increases proliferation, so the dependency framework does not apply. Takes precedence over `disease_without_lineage_enrichment`, which fires on the same input but attributes the missing dependency to weak evidence; for a gene whose loss is selected for that is the wrong diagnosis. TP53 is the canonical example: dependent in 0.4% of lines, with 41.9% of lines above +0.3.
+- `disease_without_lineage_enrichment` — a high-scoring OT disease (score > 0.5) with no DepMap lineage passing BH correction. Suppressed for a growth-suppressing gene.
+- `essential_with_sm_tractability` — common or broadly essential alongside small-molecule tractability (narrow therapeutic window). States whether a genotype deepens the dependency.
 - `prism_activity_without_clinical_drug` — PRISM compounds with median LFC < -0.5 where OT records no drug at any clinical phase.
-- `non_cancer_top_disease_with_selective_dependency` — selective dependency enriched in a cancer lineage, but the top OT disease is not a cancer (WRN / Werner syndrome is the canonical example).
+- `non_cancer_top_disease_with_cancer_dependency` — a cancer-context dependency, but the top OT disease is not a cancer. For a selective gene a significant lineage or genotype counts; for an essential gene only a genotype (WRN / Werner syndrome and PELO / MSI are the canonical examples).
 
 ## Reuse and staleness
 
@@ -56,6 +57,10 @@ Step-by-step when you need finer control:
 ## Verify
 
 - `verdict.csv` has exactly one row.
-- WRN produces at least one row in `conflicts.csv` with type `non_cancer_top_disease_with_selective_dependency`.
+- WRN produces at least one row in `conflicts.csv` with type `non_cancer_top_disease_with_cancer_dependency`.
+- PELO produces `essential_with_sm_tractability` naming the MSI contrast, and its README intro leads with MSI, not a lineage.
+- An unknown classification label raises; `CLASSIFICATION_ROLES` keys match `CLASSIFICATIONS` in depmap-local.
+- TP53 classifies as `growth-suppressing`, raises `growth_suppressing_gene_not_a_dependency`, names no top lineage despite four lineages passing BH correction, and its README does not contain the string "TP53 is non-essential".
+- For any gene, check that the README's dependency sentence agrees in sign with `mean_effect` in `verdict.csv`. A positive mean effect described as a low dependency fraction is the failure this guards.
 - A gene with no PRISM data and no known drugs has an empty or all-null `drugs_joined.csv`, not an error.
 - `sources.json` contains both `depmap` and `open_targets` keys with `run_dir` and `timestamp`.

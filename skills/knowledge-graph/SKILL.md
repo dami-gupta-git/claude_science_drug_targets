@@ -41,6 +41,25 @@ description: Build and query a persistent gene/disease/drug/lineage graph from t
   direction.
 - An edge's `evidence_ref` and `source_run` are what make it checkable —
   never write an edge without both.
+- `score` is NOT comparable across predicates and must never be used to rank
+  or compare edges of different kinds. It holds an Open Targets association
+  score for `associated_with`, a dependent fraction for
+  `dependency_in_lineage`, and nothing at all for `targeted_by_drug`. Three
+  incomparable quantities in one column.
+- Statistical support lives in `support_p`, with `support_kind` naming what it
+  is. Pass both to `make_edge` whenever the source run computed a test; omit
+  both when it did not, and the edge records as untested rather than as
+  supported. Never recover a p-value by parsing `evidence_ref` — that field
+  also carries URLs and PMIDs, so it is not numeric.
+- `query_path` filters out edges failing their own test at `alpha` before
+  searching, and this changes answers rather than trimming them. Most
+  dependency edges in a typical store do not survive multiple-testing
+  correction, so unfiltered BFS returns routes through edges at p near 1.0,
+  and hop count makes such a route look preferable to a longer well-supported
+  one. `alpha=1.0` gives the raw topology; say so if you report it.
+- A store written before `support_p` existed will make the query functions
+  raise. That is intended: re-ingest the source runs rather than filtering by
+  hand, so the support travels with the edge.
 - A literature-evidence claim's entity is typed `disease` only when
   `claim_type` is `disease_association`; every other claim type's entity is
   recorded as a generic `gene` node, since `claims.csv` doesn't distinguish

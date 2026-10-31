@@ -13,7 +13,7 @@ is passed to `write_run`.
 
 | File | Purpose |
 |---|---|
-| `kernel.py` | Open Targets table functions (`identity_table`, `associations_table`, `genetic_evidence_table`, `known_drugs_table`, `tractability_table`, `safety_table`); gnomAD fetch and tables (`fetch_gnomad_gene`, `gnomad_constraint_table`, `gnomad_lof_variants_table`, `gnomad_carrier_summary_table`); cBioPortal fetch and tables (`fetch_cbioportal_msi_cohort` and the per-step functions it composes); `msi_dose_response` delegating to `depmap-local`; `write_run` writes every supplied section plus the README. |
+| `kernel.py` | Open Targets table functions (`identity_table`, `associations_table`, `top_association_genetic_scores_table`, `known_drugs_table`, `drug_summary_table`, `tractability_table`, `safety_table`); gnomAD fetch and tables (`fetch_gnomad_gene`, `gnomad_constraint_table`, `gnomad_lof_variants_table`, `gnomad_carrier_summary_table`); cBioPortal fetch and tables (`fetch_cbioportal_msi_cohort` and the per-step functions it composes); `msi_dose_response` delegating to `depmap-local`; `write_run` writes every supplied section plus the README. |
 | `query.graphql` | The GraphQL query run in the `repl` cell. |
 | `SKILL.md` | Workflow, principles, and verification steps. |
 

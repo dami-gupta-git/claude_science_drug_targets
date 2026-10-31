@@ -5,6 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def format_cell(value) -> str:
+    """Render a table cell; floats are shortened for display, CSVs keep full precision.
+
+    |x| < 1e-3 → scientific with 3 significant figures (keeps tiny p-values
+    distinct from zero); |x| < 1 → 3 significant figures; otherwise 3 decimals.
+    """
+    if isinstance(value, bool) or not isinstance(value, float):
+        return str(value)
+    if value != value or value == 0:
+        return str(value)
+    if abs(value) < 1e-3:
+        return f"{value:.2e}"
+    if abs(value) < 1:
+        return f"{value:.3g}"
+    return str(round(value, 3))
+
+
 def markdown_table(rows: list[dict], headers: list[str] | None = None) -> str:
     """Render a list of dicts as a markdown table."""
     if not rows:
@@ -14,7 +31,7 @@ def markdown_table(rows: list[dict], headers: list[str] | None = None) -> str:
     header = " | ".join(keys)
     lines = [f"| {header} |", f"| {sep} |"]
     for row in rows:
-        cells = " | ".join(str(row.get(k, "")) for k in keys)
+        cells = " | ".join(format_cell(row.get(k, "")) for k in keys)
         lines.append(f"| {cells} |")
     return "\n".join(lines)
 

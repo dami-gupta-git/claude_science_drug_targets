@@ -10,8 +10,8 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
 - `search_balanced(gene, extra_terms=None, recent=20, landmark=10)` is the
   default entry point for a dossier — network call, run in the `python`
   cell directly (Europe PMC is a plain REST API, no MCP connector needed).
-  It returns a `Retrieval`, so unpack it: `hits, retrieval =
-  search_balanced(gene)`. Pass `retrieval` to `write_run`. Narrow a broad
+  It returns a dict, not a tuple: `retrieval = search_balanced(gene)`,
+  `hits = retrieval["hits"]`. Pass `retrieval` to `write_run`. Narrow a broad
   symbol with `extra_terms` (e.g. `"drug target"`, `"biomarker"`) rather
   than requesting more records.
 - **Do not use `search_europepmc` alone for a dossier on an established
