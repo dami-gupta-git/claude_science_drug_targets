@@ -18,8 +18,9 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
   `build_query` for why a full-name title match also needs the symbol in
   the abstract.
 - Three passes run: `recent` (newest first), `landmark` (most cited ever,
-  title match) and `established` (most cited in the last
-  `established_years` years). See `search_balanced` for why each is needed.
+  title match) and `established` (most cited per year in the last
+  `established_years` years, re-ranked from a larger candidate pool). See
+  `search_balanced` for why each is needed.
 - **Do not use `search_europepmc` alone for a dossier on an established
   gene.** The Europe PMC default order is newest first, not relevance, so
   a single pass returns only the last year or two. On WRN it returned

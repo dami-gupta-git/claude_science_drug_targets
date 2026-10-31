@@ -270,11 +270,28 @@ def year_span(hits: list[dict]) -> tuple[int | None, int | None]:
     return (min(years), max(years)) if years else (None, None)
 
 
-def pass_info(label, query, sort, requested, returned, year_min, year_max):
-    """One retrieval pass: what it asked for and what came back."""
+def pass_info(label, query, sort, requested, returned, year_min, year_max,
+              reranked_from=None):
+    """One retrieval pass: what it asked for and what came back.
+
+    reranked_from is the candidate pool size when the pass re-ranked the
+    API's top records by citations per year; None when the API order stood.
+    """
     return {"label": label, "query": query, "sort": sort,
+            "reranked_from": reranked_from,
             "requested": requested, "returned": returned,
             "year_min": year_min, "year_max": year_max}
+
+
+def citations_per_year(hit: dict, this_year: int) -> float | None:
+    """citedByCount over years since publication, counting the publication
+    year as one; None when either value is missing, so the record ranks last
+    rather than as zero."""
+    try:
+        cited, year = int(hit.get("citedByCount")), int(hit.get("pubYear"))
+    except (TypeError, ValueError):
+        return None
+    return cited / max(this_year - year + 1, 1)
 
 
 def retrieval_record(hits, passes, retrieved_at):
@@ -296,12 +313,13 @@ def retrieval_record(hits, passes, retrieved_at):
 
 def search_balanced(gene: str, full_name: str | None,
                     extra_terms: str | None = None,
-                    recent: int = 20, landmark: int = 10,
-                    established: int = 10, established_years: int = 5,
+                    recent: int = 20, landmark: int = 15,
+                    established: int = 15, established_years: int = 5,
+                    established_pool: int = 100,
                     include_preprints: bool = True,
                     timeout: int = 60) -> dict:
     """Records from three passes - newest first, most cited, and most cited
-    in the last established_years years - merged.
+    per year in the last established_years years - merged.
 
     full_name is required (approved_name gives it) and may be None only for
     a gene with no full name; omitting it loses papers whose title spells
@@ -335,8 +353,12 @@ def search_balanced(gene: str, full_name: str | None,
     months, and all-time citation counts favour papers that have had
     decades to accrue them, so on TYK2 nothing from 2020-2025 was
     retrieved: the deucravacitinib trials and approval were absent. The
-    established pass ranks by citations within the last established_years
-    years, on the landmark pass's title query.
+    established pass searches the last established_years years on the
+    landmark pass's title query. Ranked by total citations it still took
+    only the window's oldest years (TYK2: 2022-2023, nothing from
+    2024-2025), so it fetches the top established_pool records by citations
+    and keeps the established with the most citations per year (see
+    citations_per_year). Europe PMC has no per-year sort.
 
     Records are deduplicated on (source, id). Each carries a
     `retrieval_pass` key naming every pass that returned it, joined with
@@ -352,23 +374,27 @@ def search_balanced(gene: str, full_name: str | None,
     window = (this_year - established_years + 1, this_year)
     passes = (
         ("recent", build_query(gene, extra_terms, include_preprints), None,
-         recent),
+         recent, None),
         ("landmark", build_query(gene, extra_terms, include_preprints,
                                  title_only=True, full_name=full_name),
-         SORT_CITED, landmark),
+         SORT_CITED, landmark, None),
         ("established", build_query(gene, extra_terms, include_preprints,
                                     title_only=True, full_name=full_name,
                                     years=window),
-         SORT_CITED, established),
+         SORT_CITED, established, established_pool),
     )
-    for label, query, sort_key, n in passes:
+    for label, query, sort_key, n, pool in passes:
         if n <= 0:
             continue
-        found = search_europepmc(query, page_size=n, max_pages=1,
+        found = search_europepmc(query, page_size=max(n, pool or 0), max_pages=1,
                                  timeout=timeout, sort=sort_key)
+        if pool:
+            rate = lambda h: citations_per_year(h, this_year)
+            found = sorted(found, key=lambda h: (rate(h) is not None, rate(h) or 0),
+                           reverse=True)[:n]
         year_min, year_max = year_span(found)
         infos.append(pass_info(label, query, sort_key, n, len(found),
-                              year_min, year_max))
+                              year_min, year_max, reranked_from=pool))
         for hit in found:
             key = (hit.get("source"), hit.get("id"))
             if key in out:

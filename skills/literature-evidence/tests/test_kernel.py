@@ -92,6 +92,31 @@ def test_search_balanced_runs_three_passes_and_joins_labels(monkeypatch):
     assert result["hits"][0]["retrieval_pass"] == "landmark; established"
 
 
+def test_established_pass_reranks_by_citations_per_year(monkeypatch):
+    year = kernel.datetime.date.today().year
+    old = {**HIT_MED, "id": "1", "pubYear": str(year - 4), "citedByCount": 100}  # 20/yr
+    new = {**HIT_MED, "id": "2", "pubYear": str(year - 1), "citedByCount": 60}   # 30/yr
+    undated = {**HIT_MED, "id": "3", "pubYear": None, "citedByCount": 500}
+    pools = []
+
+    def fake_search(query, page_size, max_pages, timeout, sort):
+        if "PUB_YEAR" not in query:
+            return []
+        pools.append(page_size)
+        return [dict(undated), dict(old), dict(new)]
+
+    monkeypatch.setattr(kernel, "search_europepmc", fake_search)
+    result = kernel.search_balanced("TYK2", None, established=2, established_pool=50)
+    assert pools == [50]
+    assert [h["id"] for h in result["hits"]] == ["2", "1"]
+    assert result["passes"][-1]["reranked_from"] == 50
+
+
+def test_citations_per_year_missing_values():
+    assert kernel.citations_per_year({"citedByCount": None, "pubYear": "2020"}, 2026) is None
+    assert kernel.citations_per_year({"citedByCount": 12, "pubYear": "2026"}, 2026) == 12
+
+
 def test_approved_name_requires_exact_symbol(monkeypatch):
     class Response:
         def __init__(self, body):
