@@ -72,6 +72,25 @@ def test_build_query_year_window():
     assert q.endswith("AND PUB_YEAR:[2022 TO 2026]")
 
 
+def test_build_query_aliases_widen_every_name_clause():
+    assert (kernel.build_query("TP53", aliases=["p53"])
+            == '(TITLE:"TP53" OR ABSTRACT:"TP53" OR TITLE:"p53" OR ABSTRACT:"p53")')
+    assert (kernel.build_query("TP53", title_only=True, aliases=["p53"])
+            == '(TITLE:"TP53" OR TITLE:"p53")')
+
+
+def test_build_query_context_requires_an_abstract_word():
+    q = kernel.build_query("PELO", title_only=True, context=["ribosome", "mRNA"])
+    assert q == '(TITLE:"PELO") AND (ABSTRACT:"ribosome" OR ABSTRACT:"mRNA")'
+
+
+def test_search_balanced_records_search_terms(monkeypatch):
+    monkeypatch.setattr(kernel, "search_europepmc", lambda *a, **k: [])
+    r = kernel.search_balanced("PELO", "pelota", aliases=["pelota"], context=["ribosome"])
+    assert r["search_terms"] == {"full_name": "pelota", "aliases": ["pelota"],
+                                 "context": ["ribosome"]}
+
+
 def test_build_query_rejects_quote_in_full_name():
     with pytest.raises(ValueError, match="double quote"):
         kernel.build_query("TYK2", title_only=True, full_name='tyrosine "kinase" 2')

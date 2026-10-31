@@ -7,7 +7,18 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
 
 ## Workflow
 
-- `search_balanced(gene, approved_name(gene))` is the default entry point
+- **Choose search terms** before searching, from the symbol and
+  `approved_name(gene)` only — no further lookup:
+  - `aliases`: other names papers put in titles for this gene (TP53 →
+    `["p53"]`, MAP3K13 → `["LZK"]`). Leave empty if the symbol is what
+    the field uses. Never a name shared with another gene.
+  - `context`: only if the symbol is also an ordinary word or another
+    gene's name — 2-4 words a real paper's abstract would contain (PELO →
+    `["ribosome", "mRNA", "Hbs1", "Dom34"]`). Otherwise leave empty; it
+    narrows every pass.
+  - Pass both to `search_balanced`; they are recorded in `retrieval.json`.
+    State them and why in the Retrieval finding.
+- `search_balanced(gene, approved_name(gene), aliases=..., context=...)` is the default entry point
   for a dossier — network calls, run in the `python` cell directly (Europe
   PMC and Open Targets are plain web APIs, no MCP connector needed). It
   returns a dict, not a tuple: `hits = retrieval["hits"]`. Pass `retrieval`
@@ -119,6 +130,8 @@ a claims table has passed both. What still needs a human eye:
   earliest record is last year has not seen the field's founding work; if
   that is genuinely a young target, say so explicitly rather than leaving
   the span unremarked.
+- Skim the landmark titles: if several are not about the gene, the symbol
+  collides with another word and `context` is needed (or is wrong).
 - All three passes contributed. If no `retrieval_pass` names `landmark`
   or `established`, that query returned nothing — check the symbol
   appears in titles rather than assuming no such papers exist.

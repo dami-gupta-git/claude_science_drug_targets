@@ -120,8 +120,16 @@ def build_query(gene: str, extra_terms: str | None = None,
                 include_preprints: bool = True,
                 title_only: bool = False,
                 full_name: str | None = None,
-                years: tuple[int, int] | None = None) -> str:
+                years: tuple[int, int] | None = None,
+                aliases: list[str] | None = None,
+                context: list[str] | None = None) -> str:
     """Europe PMC query for a gene symbol in title or abstract.
+
+    aliases are other names the literature uses, matched wherever the
+    symbol is (TP53 papers mostly say p53; MAP3K13 papers say LZK). context
+    words, when given, must appear in the abstract: they narrow a symbol
+    that is also an ordinary word (PELO is Portuguese for "by the"). Both
+    come from the "Choose search terms" step in SKILL.md.
 
     extra_terms, if given, is AND-ed onto the gene term as free text
     (e.g. "drug target", "biomarker") to narrow a broad symbol. Europe PMC
@@ -143,16 +151,20 @@ def build_query(gene: str, extra_terms: str | None = None,
 
     years, an inclusive (first, last) pair, restricts by publication year.
     """
-    for term in (gene, full_name):
+    names = [gene, *(aliases or [])]
+    for term in [*names, full_name, *(context or [])]:
         if term and '"' in term:
             raise ValueError('%r contains a double quote, which breaks '
                              'the Europe PMC query syntax' % term)
-    if title_only and full_name:
-        query = '(TITLE:"%s" OR (TITLE:"%s" AND ABSTRACT:"%s"))' % (gene, full_name, gene)
-    elif title_only:
-        query = '(TITLE:"%s")' % gene
+    if title_only:
+        clauses = ['TITLE:"%s"' % n for n in names]
+        if full_name:
+            clauses.append('(TITLE:"%s" AND ABSTRACT:"%s")' % (full_name, gene))
     else:
-        query = '(TITLE:"%s" OR ABSTRACT:"%s")' % (gene, gene)
+        clauses = ['TITLE:"%s" OR ABSTRACT:"%s"' % (n, n) for n in names]
+    query = "(%s)" % " OR ".join(clauses)
+    if context:
+        query += " AND (%s)" % " OR ".join('ABSTRACT:"%s"' % c for c in context)
     if years:
         query += " AND PUB_YEAR:[%d TO %d]" % years
     if extra_terms:
@@ -294,7 +306,7 @@ def citations_per_year(hit: dict, this_year: int) -> float | None:
     return cited / max(this_year - year + 1, 1)
 
 
-def retrieval_record(hits, passes, retrieved_at):
+def retrieval_record(hits, passes, retrieved_at, search_terms=None):
     """Records plus the provenance of how they were retrieved.
 
     search_balanced returns this so write_run can write retrieval.json
@@ -308,10 +320,13 @@ def retrieval_record(hits, passes, retrieved_at):
     `hits, retrieval = search_balanced(...)`, which raised ValueError
     because the record carries three fields, not two.
     """
-    return {"hits": hits, "passes": passes, "retrieved_at": retrieved_at}
+    return {"hits": hits, "passes": passes, "retrieved_at": retrieved_at,
+            "search_terms": search_terms}
 
 
 def search_balanced(gene: str, full_name: str | None,
+                    aliases: list[str] | None = None,
+                    context: list[str] | None = None,
                     extra_terms: str | None = None,
                     recent: int = 20, landmark: int = 15,
                     established: int = 15, established_years: int = 5,
@@ -323,7 +338,8 @@ def search_balanced(gene: str, full_name: str | None,
 
     full_name is required (approved_name gives it) and may be None only for
     a gene with no full name; omitting it loses papers whose title spells
-    the gene out. See build_query.
+    the gene out. aliases and context apply to every pass and are recorded
+    in retrieval.json; see build_query.
 
     Returns a dict with keys hits, passes and retrieved_at (see
     retrieval_record); hand the whole dict to write_run, which writes it to
@@ -372,15 +388,16 @@ def search_balanced(gene: str, full_name: str | None,
     infos = []
     this_year = datetime.date.today().year
     window = (this_year - established_years + 1, this_year)
+    terms = {"aliases": aliases, "context": context}
     passes = (
-        ("recent", build_query(gene, extra_terms, include_preprints), None,
-         recent, None),
+        ("recent", build_query(gene, extra_terms, include_preprints, **terms),
+         None, recent, None),
         ("landmark", build_query(gene, extra_terms, include_preprints,
-                                 title_only=True, full_name=full_name),
+                                 title_only=True, full_name=full_name, **terms),
          SORT_CITED, landmark, None),
         ("established", build_query(gene, extra_terms, include_preprints,
                                     title_only=True, full_name=full_name,
-                                    years=window),
+                                    years=window, **terms),
          SORT_CITED, established, established_pool),
     )
     for label, query, sort_key, n, pool in passes:
@@ -403,7 +420,8 @@ def search_balanced(gene: str, full_name: str | None,
                 hit["retrieval_pass"] = label
                 out[key] = hit
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    return retrieval_record(list(out.values()), infos, stamp)
+    return retrieval_record(list(out.values()), infos, stamp,
+                            {"full_name": full_name, **terms})
 
 
 # --- text normalisation and verbatim checking -------------------------
@@ -602,6 +620,7 @@ def retrieval_manifest(hits: list[dict], retrieval: dict | None,
     return {
         "gene": gene,
         "retrieved_at": retrieval["retrieved_at"] if retrieval else None,
+        "search_terms": retrieval.get("search_terms") if retrieval else None,
         "passes": list(retrieval["passes"]) if retrieval else [],
         "records": {
             "total": len(hits),
