@@ -57,6 +57,60 @@ def test_build_query_can_exclude_preprints():
     assert "NOT SRC:PPR" in q
 
 
+def test_build_query_full_name_title_match_needs_symbol_in_abstract():
+    q = kernel.build_query("TYK2", title_only=True, full_name="tyrosine kinase 2")
+    assert q == '(TITLE:"TYK2" OR (TITLE:"tyrosine kinase 2" AND ABSTRACT:"TYK2"))'
+
+
+def test_build_query_full_name_leaves_title_or_abstract_query_unchanged():
+    assert (kernel.build_query("TYK2", full_name="tyrosine kinase 2")
+            == kernel.build_query("TYK2"))
+
+
+def test_build_query_year_window():
+    q = kernel.build_query("TYK2", title_only=True, years=(2022, 2026))
+    assert q.endswith("AND PUB_YEAR:[2022 TO 2026]")
+
+
+def test_build_query_rejects_quote_in_full_name():
+    with pytest.raises(ValueError, match="double quote"):
+        kernel.build_query("TYK2", title_only=True, full_name='tyrosine "kinase" 2')
+
+
+def test_search_balanced_runs_three_passes_and_joins_labels(monkeypatch):
+    calls = []
+
+    def fake_search(query, page_size, max_pages, timeout, sort):
+        calls.append((query, sort))
+        return [dict(HIT_MED)] if sort == kernel.SORT_CITED else []
+
+    monkeypatch.setattr(kernel, "search_europepmc", fake_search)
+    result = kernel.search_balanced("TYK2", "tyrosine kinase 2", established_years=5)
+    assert [p["label"] for p in result["passes"]] == ["recent", "landmark", "established"]
+    assert "PUB_YEAR:[" in calls[2][0]
+    assert 'TITLE:"tyrosine kinase 2"' in calls[1][0]
+    assert result["hits"][0]["retrieval_pass"] == "landmark; established"
+
+
+def test_approved_name_requires_exact_symbol(monkeypatch):
+    class Response:
+        def __init__(self, body):
+            self.body = body
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            return self.body
+
+    body = (b'{"data":{"search":{"hits":[{"object":{"approvedSymbol":"TYK2",'
+            b'"approvedName":"tyrosine kinase 2"}}]}}}')
+    monkeypatch.setattr(kernel.urllib.request, "urlopen", lambda *a, **k: Response(body))
+    assert kernel.approved_name("tyk2") == "tyrosine kinase 2"
+    with pytest.raises(ValueError, match="no target"):
+        kernel.approved_name("TYK3")
+
+
 def test_publication_row_maps_fields():
     row = kernel.publication_row(HIT_MED)
     assert row["pmid"] == "38012345"
@@ -93,7 +147,7 @@ def test_publications_table_empty():
 
 VALID_CLAIM = {
     "claim_id": "C1", "gene": "WRN", "claim_type": "disease_association",
-    "entity": "microsatellite-instable cancer", "direction": "positive",
+    "entity": "microsatellite-instable cancer", "direction": "dependency",
     "evidence_text": "WRN is selectively essential in MSI cancer cell lines.",
     "source_id": "MED/38012345",
 }
@@ -124,6 +178,17 @@ def test_claims_table_bad_claim_type_raises():
     bad = {**VALID_CLAIM, "claim_type": "vibes"}
     with pytest.raises(ValueError, match="not in"):
         kernel.claims_table([bad], [HIT_MED])
+
+
+def test_claims_table_bad_direction_raises():
+    bad = {**VALID_CLAIM, "direction": "risk"}
+    with pytest.raises(ValueError, match="direction"):
+        kernel.claims_table([bad], [HIT_MED])
+
+
+def test_claims_table_allows_empty_direction():
+    df = kernel.claims_table([{**VALID_CLAIM, "direction": None}], [HIT_MED])
+    assert len(df) == 1
 
 
 def test_claims_table_unknown_source_raises():

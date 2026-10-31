@@ -7,13 +7,19 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
 
 ## Workflow
 
-- `search_balanced(gene, extra_terms=None, recent=20, landmark=10)` is the
-  default entry point for a dossier — network call, run in the `python`
-  cell directly (Europe PMC is a plain REST API, no MCP connector needed).
-  It returns a dict, not a tuple: `retrieval = search_balanced(gene)`,
-  `hits = retrieval["hits"]`. Pass `retrieval` to `write_run`. Narrow a broad
-  symbol with `extra_terms` (e.g. `"drug target"`, `"biomarker"`) rather
-  than requesting more records.
+- `search_balanced(gene, approved_name(gene))` is the default entry point
+  for a dossier — network calls, run in the `python` cell directly (Europe
+  PMC and Open Targets are plain web APIs, no MCP connector needed). It
+  returns a dict, not a tuple: `hits = retrieval["hits"]`. Pass `retrieval`
+  to `write_run`. Narrow a broad symbol with `extra_terms` (e.g.
+  `"drug target"`, `"biomarker"`) rather than requesting more records.
+- Always pass the full name from `approved_name`, never a hand-typed one.
+  Omitting it misses papers whose title spells the gene out; see
+  `build_query` for why a full-name title match also needs the symbol in
+  the abstract.
+- Three passes run: `recent` (newest first), `landmark` (most cited ever,
+  title match) and `established` (most cited in the last
+  `established_years` years). See `search_balanced` for why each is needed.
 - **Do not use `search_europepmc` alone for a dossier on an established
   gene.** The Europe PMC default order is newest first, not relevance, so
   a single pass returns only the last year or two. On WRN it returned
@@ -29,9 +35,9 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
   where that paper ranks 2nd, and keeps abstract matching for the recent
   pass so current work that does not name the gene in its title is still
   seen. Verified across WRN, KRAS and TNIK.
-- Each row carries `retrieval_pass`: `recent`, `landmark`, or `both`.
-  `both` means current and well cited. Report the year span of what was
-  retrieved — if it starts at last year, the retrieval is the finding.
+- Each row's `retrieval_pass` names every pass that returned it, joined
+  with "; ". Report the year span of what was retrieved — if it starts at
+  last year, the retrieval is the finding.
 - `build_query(gene, extra_terms=None)` → `search_europepmc(query)` remains
   available for a single targeted pass. Pass `sort=` with one of the
   `SORT_*` constants; an unrecognized sort string returns no results
@@ -44,14 +50,17 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
   table after the fact.
 - Read the returned abstracts. For each claim worth recording, write a row
   with `claim_type` (one of `CLAIM_TYPES`), `entity` (the disease, gene,
-  pathway, or biomarker the claim is about), `direction` where applicable,
+  pathway, or biomarker the claim is about), `direction` where applicable
+  (one of `DIRECTIONS`, read as a statement about the gene; check the
+  definition, not just the word — a paper where blocking the gene helps is
+  `therapeutic target`, not `increases risk`),
   `source_id` (the `<source>/<id>` of the publication it came from, e.g.
   `MED/30971823`), and `evidence_text` set to the exact sentence the claim
   came from — not a paraphrase. Do not record a claim you cannot point to a
   sentence for. Do not hand-copy `pmid`, `doi` or `url`; `claims_table`
   fills those in from the publication.
 - `claims_table(claim_rows, hits)` raises if a required field is missing,
-  if `claim_type` isn't recognized, if `source_id` names a publication that
+  if `claim_type` or `direction` isn't recognized, if `source_id` names a publication that
   was not retrieved, or if `evidence_text` is not a verbatim substring of
   that publication's abstract. Fix the row, don't work around it.
 - `write_run(hits, claim_rows, out, subject, summary, steps,
@@ -109,9 +118,11 @@ a claims table has passed both. What still needs a human eye:
   earliest record is last year has not seen the field's founding work; if
   that is genuinely a young target, say so explicitly rather than leaving
   the span unremarked.
-- Both retrieval passes contributed. If `retrieval_pass` has no `landmark`
-  or `both` rows, the landmark query returned nothing — check the symbol
+- All three passes contributed. If no `retrieval_pass` names `landmark`
+  or `established`, that query returned nothing — check the symbol
   appears in titles rather than assuming no such papers exist.
+- The year coverage has no gap between the landmark span and the recent
+  span that the established pass should have filled.
 - `duplicate_titles` in `retrieval.json` is empty, or the duplicates are
   accounted for when claims are counted.
 - The landmark pass ranks by citation count, which favours older work and

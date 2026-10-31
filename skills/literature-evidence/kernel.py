@@ -1,10 +1,10 @@
 """Fetch and shape gene literature evidence from the Europe PMC REST API.
 
-kernel.py loads with this skill: build_query, search_europepmc,
+kernel.py loads with this skill: approved_name, build_query, search_europepmc,
 search_balanced, publication_row, publications_table, publication_index,
 normalise_text, verify_claims, claims_table, write_run, and the constants
 EUROPEPMC_SEARCH_URL, EUROPEPMC_ARTICLE_URL, PUBLICATION_COLUMNS,
-CLAIM_TYPES, CLAIM_COLUMNS, PREPRINT_SOURCE, SORT_*.
+CLAIM_TYPES, CLAIM_COLUMNS, DIRECTIONS, PREPRINT_SOURCE, SORT_*.
 
 Europe PMC indexes bioRxiv and medRxiv preprints under source "PPR"
 alongside peer-reviewed literature, so no separate preprint source is
@@ -71,10 +71,56 @@ CLAIM_COLUMNS = [
 
 CLAIM_REQUIRED = ("gene", "claim_type", "entity", "evidence_text", "source_id")
 
+# The only accepted `direction` values, each read as a statement about the
+# gene. A free-text field let a paper showing that blocking TYK2 rescues
+# Alzheimer's-type toxicity be tagged "risk", the opposite reading.
+# direction may be left empty where none of these applies.
+DIRECTIONS = {
+    "increases risk": "the gene, its activity or a variant in it raises risk or severity of the entity",
+    "decreases risk": "the gene, its activity or a variant in it lowers risk of the entity",
+    "loss causes": "losing the gene causes the entity (e.g. an inherited deficiency)",
+    "therapeutic target": "inhibiting or modulating the gene treats, or is proposed to treat, the entity",
+    "dependency": "cells of the entity need the gene to survive or grow",
+    "suppresses": "the gene restrains the entity; losing or blocking it promotes the entity",
+    "required for": "the gene is needed for the entity (a pathway, process or response)",
+    "activates": "the gene activates or raises the entity",
+    "activated by": "the entity activates the gene",
+    "inhibited by": "the entity inhibits, dephosphorylates or blocks the gene",
+    "binds": "the entity physically binds the gene, with no sign of effect stated",
+    "elevated": "the gene's expression or activity is raised in the entity",
+    "reduced": "the gene's expression or activity is lowered in, or by, the entity",
+}
+
+OPEN_TARGETS_GRAPHQL_URL = "https://api.platform.opentargets.org/api/v4/graphql"
+
+
+def approved_name(symbol: str, timeout: int = 60) -> str:
+    """The gene's approved full name from Open Targets (TYK2 -> "tyrosine kinase 2").
+
+    Raises when no target's approved symbol matches exactly, rather than
+    taking the top search hit, which for a mistyped symbol is another gene.
+    """
+    query = ('query($q:String!){search(queryString:$q,entityNames:["target"],'
+             'page:{index:0,size:10}){hits{object{... on Target{approvedSymbol approvedName}}}}}')
+    request = urllib.request.Request(
+        OPEN_TARGETS_GRAPHQL_URL,
+        data=json.dumps({"query": query, "variables": {"q": symbol}}).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout) as fh:
+        body = json.load(fh)
+    hits = (((body.get("data") or {}).get("search") or {}).get("hits")) or []
+    for hit in hits:
+        target = hit.get("object") or {}
+        if (target.get("approvedSymbol") or "").upper() == symbol.upper():
+            return target["approvedName"]
+    raise ValueError("Open Targets has no target with approved symbol %r" % symbol)
+
 
 def build_query(gene: str, extra_terms: str | None = None,
                 include_preprints: bool = True,
-                title_only: bool = False) -> str:
+                title_only: bool = False,
+                full_name: str | None = None,
+                years: tuple[int, int] | None = None) -> str:
     """Europe PMC query for a gene symbol in title or abstract.
 
     extra_terms, if given, is AND-ed onto the gene term as free text
@@ -86,15 +132,29 @@ def build_query(gene: str, extra_terms: str | None = None,
     carries the symbol match. Combined with citation sorting this is what
     surfaces a field's founding papers; used alone it loses current work
     that discusses a gene without naming it in the title. search_balanced
-    applies it to the landmark pass only.
+    applies it to the landmark and established passes.
+
+    full_name widens a title_only query to titles that spell the gene out
+    (TYK2's most-cited paper is titled "Human tyrosine kinase 2
+    deficiency"), but only when the abstract also names the symbol: the
+    bare phrase "tyrosine kinase 2" also titles papers on proline-rich
+    tyrosine kinase 2 (PYK2). The title-or-abstract query already reaches
+    such papers through the abstract, so full_name does not change it.
+
+    years, an inclusive (first, last) pair, restricts by publication year.
     """
-    if '"' in gene:
-        raise ValueError('gene %r contains a double quote, which breaks '
-                         'the Europe PMC query syntax' % gene)
-    if title_only:
+    for term in (gene, full_name):
+        if term and '"' in term:
+            raise ValueError('%r contains a double quote, which breaks '
+                             'the Europe PMC query syntax' % term)
+    if title_only and full_name:
+        query = '(TITLE:"%s" OR (TITLE:"%s" AND ABSTRACT:"%s"))' % (gene, full_name, gene)
+    elif title_only:
         query = '(TITLE:"%s")' % gene
     else:
         query = '(TITLE:"%s" OR ABSTRACT:"%s")' % (gene, gene)
+    if years:
+        query += " AND PUB_YEAR:[%d TO %d]" % years
     if extra_terms:
         query += " AND (%s)" % extra_terms
     if not include_preprints:
@@ -224,7 +284,7 @@ def retrieval_record(hits, passes, retrieved_at):
     without the caller having to remember what it asked for. Access it by
     key:
 
-        result = search_balanced("WRN")
+        result = search_balanced("WRN", approved_name("WRN"))
         hits = result["hits"]
 
     Note it is not a 2-tuple: an earlier version of this docstring showed
@@ -234,20 +294,27 @@ def retrieval_record(hits, passes, retrieved_at):
     return {"hits": hits, "passes": passes, "retrieved_at": retrieved_at}
 
 
-def search_balanced(gene: str, extra_terms: str | None = None,
+def search_balanced(gene: str, full_name: str | None,
+                    extra_terms: str | None = None,
                     recent: int = 20, landmark: int = 10,
+                    established: int = 10, established_years: int = 5,
                     include_preprints: bool = True,
                     timeout: int = 60) -> dict:
-    """Records from two passes - newest first, then most cited - merged.
+    """Records from three passes - newest first, most cited, and most cited
+    in the last established_years years - merged.
 
-    Returns a dict with keys hits, passes and retrieved_at. Pass it to
-    `hits, retrieval = search_balanced(...)` and hand retrieval to
-    write_run, which writes it to retrieval.json. Recording the query,
+    full_name is required (approved_name gives it) and may be None only for
+    a gene with no full name; omitting it loses papers whose title spells
+    the gene out. See build_query.
+
+    Returns a dict with keys hits, passes and retrieved_at (see
+    retrieval_record); hand the whole dict to write_run, which writes it to
+    retrieval.json. Recording the query,
     sort and year span alongside the records is what lets a later reader
     see what the retrieval could not have reached; describing it in prose
     means it is only there when someone remembers to write it.
 
-    A single pass cannot cover a well-studied gene, for two separate
+    A single pass cannot cover a well-studied gene, for three separate
     reasons that have to be fixed separately.
 
     The API default order is newest first, NOT relevance. On WRN that
@@ -264,20 +331,35 @@ def search_balanced(gene: str, extra_terms: str | None = None,
     the recent pass, which needs abstract matches to see current work
     that does not lead with the gene name.
 
+    The two passes still leave a hole. Newest-first stops at the last few
+    months, and all-time citation counts favour papers that have had
+    decades to accrue them, so on TYK2 nothing from 2020-2025 was
+    retrieved: the deucravacitinib trials and approval were absent. The
+    established pass ranks by citations within the last established_years
+    years, on the landmark pass's title query.
+
     Records are deduplicated on (source, id). Each carries a
-    `retrieval_pass` key of "recent", "landmark" or "both" - "both" means
+    `retrieval_pass` key naming every pass that returned it, joined with
+    "; " (e.g. "landmark; established"). A record in more than one pass is
     current and well cited, which is worth knowing when weighting claims.
 
-    recent and landmark are record counts, not pages. Passing landmark=0
-    reproduces a single newest-first pass.
+    recent, landmark and established are record counts, not pages; 0 skips
+    a pass.
     """
     out = {}
     infos = []
+    this_year = datetime.date.today().year
+    window = (this_year - established_years + 1, this_year)
     passes = (
         ("recent", build_query(gene, extra_terms, include_preprints), None,
          recent),
         ("landmark", build_query(gene, extra_terms, include_preprints,
-                                 title_only=True), SORT_CITED, landmark),
+                                 title_only=True, full_name=full_name),
+         SORT_CITED, landmark),
+        ("established", build_query(gene, extra_terms, include_preprints,
+                                    title_only=True, full_name=full_name,
+                                    years=window),
+         SORT_CITED, established),
     )
     for label, query, sort_key, n in passes:
         if n <= 0:
@@ -290,8 +372,7 @@ def search_balanced(gene: str, extra_terms: str | None = None,
         for hit in found:
             key = (hit.get("source"), hit.get("id"))
             if key in out:
-                if out[key].get("retrieval_pass") != label:
-                    out[key]["retrieval_pass"] = "both"
+                out[key]["retrieval_pass"] += "; " + label
             else:
                 hit["retrieval_pass"] = label
                 out[key] = hit
@@ -462,6 +543,9 @@ def claims_table(claim_rows: list[dict], hits: list[dict]) -> pd.DataFrame:
         if row["claim_type"] not in CLAIM_TYPES:
             raise ValueError(
                 "claim_type %r not in %s" % (row["claim_type"], CLAIM_TYPES))
+        if row.get("direction") and row["direction"] not in DIRECTIONS:
+            raise ValueError("direction %r not in DIRECTIONS: %s"
+                             % (row["direction"], sorted(DIRECTIONS)))
 
     problems = verify_claims(claim_rows, hits)
     if problems:
