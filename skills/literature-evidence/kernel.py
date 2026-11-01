@@ -32,8 +32,30 @@ from pathlib import Path
 import pandas as pd
 
 
+EUROPEPMC_REST_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest/"
 EUROPEPMC_SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+EUROPEPMC_LINK_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{source}/{id}/{link}"
 EUROPEPMC_ARTICLE_URL = "https://europepmc.org/article/{source}/{id}"
+
+# Evidence angles searched on every run, whatever the gene. Fixed here
+# rather than composed per run so coverage does not vary between runs:
+# a safety or contradiction claim that only appears when the model happens
+# to think of searching for it is not reproducible. Each value is AND-ed
+# onto the gene query. The model supplies the gene's names, not these.
+EVIDENCE_TOPICS = {
+    "genetics": ('ABSTRACT:"variant" OR ABSTRACT:"polymorphism" OR ABSTRACT:"genome-wide" '
+                 'OR ABSTRACT:"Mendelian randomization" OR ABSTRACT:"loss-of-function"'),
+    "clinical": ('ABSTRACT:"randomized" OR ABSTRACT:"randomised" OR ABSTRACT:"placebo" '
+                 'OR ABSTRACT:"phase 2" OR ABSTRACT:"phase 3" OR ABSTRACT:"clinical trial"'),
+    "safety": ('ABSTRACT:"adverse event" OR ABSTRACT:"safety" OR ABSTRACT:"toxicity" '
+               'OR ABSTRACT:"side effect" OR ABSTRACT:"discontinuation"'),
+    "contradiction": ('ABSTRACT:"did not" OR ABSTRACT:"no significant" OR ABSTRACT:"failed to" '
+                      'OR ABSTRACT:"contrary to" OR ABSTRACT:"conflicting"'),
+}
+
+# Europe PMC link endpoints used for snowballing.
+LINK_REFERENCES = "references"
+LINK_CITATIONS = "citations"
 
 PUBLICATION_COLUMNS = [
     "source_id", "pmid", "pmcid", "doi", "title", "journal", "pub_year",
@@ -47,10 +69,15 @@ PREPRINT_SOURCE = "PPR"
 
 CLAIM_TYPES = ("disease_association", "interaction", "mechanism", "biomarker")
 
-# Europe PMC sort strings, confirmed against the live API. Omitting sort
-# gives newest-first, NOT relevance - see search_europepmc. Only these
-# values are accepted; anything else returns a response with no
-# resultList rather than an error.
+# Europe PMC sort strings, confirmed against the live API. Only these
+# values are accepted; anything else returns a response with no resultList
+# rather than an error. Omitting sort gives the API's relevance order,
+# which is not the same as SORT_DATE_DESC: measured on TYK2, the first 100
+# relevance-ordered records name the gene in the title 92 times and span
+# 2023-2026, where the first 100 date-ordered records name it 29 times and
+# are all from the newest year. Relevance is the better broad pass, and
+# reaches nothing older than its newest few years, which is what
+# SORT_CITED and the snowball are for.
 SORT_CITED = "CITED desc"
 SORT_DATE_DESC = "P_PDATE_D desc"
 SORT_DATE_ASC = "P_PDATE_D asc"
@@ -117,7 +144,7 @@ def build_query(gene: str, extra_terms: str | None = None,
     carries the symbol match. Combined with citation sorting this is what
     surfaces a field's founding papers; used alone it loses current work
     that discusses a gene without naming it in the title. search_balanced
-    applies it to the landmark and established passes.
+    applies it to the landmark pass.
 
     full_name widens a title_only query to titles that spell the gene out
     (TYK2's most-cited paper is titled "Human tyrosine kinase 2
@@ -254,6 +281,75 @@ def raise_if_sort_at_fault(query: str, sort: str, page_size: int,
 # retrieval keys: hits, passes, retrieved_at
 
 
+def fetch_linked_keys(source: str, ident: str, link: str, limit: int = 100,
+                      timeout: int = 60) -> list[tuple]:
+    """(source, id) of the papers one paper references or is cited by.
+
+    link is LINK_REFERENCES or LINK_CITATIONS. These endpoints return a
+    reduced record with no abstractText, so the keys are re-fetched by
+    fetch_records_by_key before anything can be quoted from them.
+    """
+    url = "%s?%s" % (EUROPEPMC_LINK_URL.format(source=source, id=ident, link=link),
+                     urllib.parse.urlencode({"format": "json", "pageSize": limit}))
+    body = fetch_json_retrying(url, timeout)
+    listing = body.get("citationList") if link == LINK_CITATIONS else body.get("referenceList")
+    rows = (listing or {}).get("citation" if link == LINK_CITATIONS else "reference") or []
+    return [(row.get("source"), row.get("id")) for row in rows
+            if row.get("source") and row.get("id")]
+
+
+def fetch_records_by_key(keys: list, batch_size: int = 25,
+                         timeout: int = 60) -> list[dict]:
+    """Full records for (source, id) keys, fetched in batches of batch_size.
+
+    The link endpoints give ids without abstracts; this turns them back
+    into the same core records a search returns. Keys are grouped by source
+    because the id is only unique within one.
+    """
+    by_source = {}
+    for source, ident in keys:
+        by_source.setdefault(source, []).append(ident)
+    out = []
+    for source, idents in by_source.items():
+        for start in range(0, len(idents), batch_size):
+            chunk = idents[start:start + batch_size]
+            query = "(%s) AND SRC:%s" % (
+                " OR ".join('EXT_ID:"%s"' % i for i in chunk), source)
+            out.extend(search_europepmc(query, page_size=batch_size, max_pages=1,
+                                        timeout=timeout))
+    return out
+
+
+def snowball(seeds: list, link: str, per_seed: int = 100,
+             timeout: int = 60) -> list[dict]:
+    """Records on one side of each seed: what it cites, or what cites it.
+
+    Seeds are the best-cited records already retrieved. Their reference
+    lists reach the work the field itself credits; their citing papers
+    reach what came after.
+
+    The two sides are fetched separately because their citation counts are
+    not comparable, and pooling them hides one. Measured on the 2019
+    selective-TYK2-inhibition paper, its references run 1990-2019 and carry
+    up to 2895 citations, while the papers citing it run 2025-2026 and
+    carry at most 12. Ranked together by citation count, no citing paper
+    ever wins a slot, and the pass returns only old work.
+
+    Snowballing does not replace the citation-ranked pass either: on a
+    five-seed test it missed the 1990 paper that named the gene, which
+    citation ranking returns directly.
+    """
+    keys = []
+    for seed in seeds:
+        source, ident = seed.get("source"), seed.get("id")
+        if source and ident:
+            keys.extend(fetch_linked_keys(source, ident, link, limit=per_seed,
+                                          timeout=timeout))
+    seen = {(s.get("source"), s.get("id")) for s in seeds}
+    fresh = [k for k in dict.fromkeys(keys) if k not in seen]
+    return fetch_records_by_key(fresh, timeout=timeout) if fresh else []
+
+
 def year_span(hits: list[dict]) -> tuple[int | None, int | None]:
     """Earliest and latest pubYear among hits, or (None, None) if none parse."""
     years = []
@@ -269,8 +365,10 @@ def pass_info(label, query, sort, requested, returned, year_min, year_max,
               reranked_from=None):
     """One retrieval pass: what it asked for and what came back.
 
+    For a snowball pass, query is the seed records it followed and sort
+    names the link endpoint used, since it issues no search of its own.
     reranked_from is the candidate pool size when the pass re-ranked the
-    API's top records by citations per year; None when the API order stood.
+    API's records itself; None when the API order stood.
     """
     return {"label": label, "query": query, "sort": sort,
             "reranked_from": reranked_from,
@@ -309,13 +407,15 @@ def retrieval_record(hits, passes, retrieved_at, search_terms=None):
 
 def search_balanced(gene: str, search_terms: dict,
                     extra_terms: str | None = None,
-                    recent: int = 20, landmark: int = 15,
-                    established: int = 15, established_years: int = 5,
-                    established_pool: int = 100,
+                    relevant: int = 20, landmark: int = 15,
+                    recent_years_n: int = 12, recent_years: int = 5,
+                    recent_years_pool: int = 100,
+                    per_topic: int = 5, referenced: int = 8, citing: int = 6,
+                    snowball_seeds: int = 3,
                     include_preprints: bool = True,
                     timeout: int = 60) -> dict:
-    """Records from three passes - newest first, most cited, and most cited
-    per year in the last established_years years - merged.
+    """Records from four kinds of pass - relevance, citation rank, one per
+    fixed evidence topic, and a snowball off the best-cited records - merged.
 
     search_terms is the record the literature-search-terms skill writes
     (its latest_search_terms reads it): the gene's full_name, aliases and
@@ -330,62 +430,88 @@ def search_balanced(gene: str, search_terms: dict,
     see what the retrieval could not have reached; describing it in prose
     means it is only there when someone remembers to write it.
 
-    A single pass cannot cover a well-studied gene, for three separate
-    reasons that have to be fixed separately.
+    No single ordering covers a well-studied gene, and each pass answers a
+    different failure.
 
-    The API default order is newest first, NOT relevance. On WRN that
-    returned only 2025-2026 records, so the 2019 papers establishing the
-    target were absent whether 12 or 30 records were requested; widening
-    the cap cannot reach them.
+    `relevant` uses the API's relevance order on the title-or-abstract
+    query. It is the broad pass because it is both on topic and current:
+    measured on TYK2, its first 100 records name the gene in the title 92
+    times and span 2023-2026, where date ordering names it 29 times and
+    returns one year. It reaches nothing older than that span.
 
-    Sorting by citation count reaches old work but not, on its own, the
-    right old work. On the title-or-abstract query the founding WRN paper
-    ranks 15th by citations, behind papers on SIRT6, RECQL4 and yeast
-    Srs2 that merely mention the gene. Half the top 30 are not about it.
-    So the landmark pass narrows the gene term to the TITLE, where the
-    same paper ranks 2nd. Narrowing is right for this pass and wrong for
-    the recent pass, which needs abstract matches to see current work
-    that does not lead with the gene name.
+    `landmark` sorts by citation count, which reaches old work but not, on
+    its own, the right old work: on the title-or-abstract query the
+    founding WRN paper ranks 15th, behind papers on SIRT6, RECQL4 and
+    yeast Srs2 that merely mention the gene, and half the top 30 are off
+    topic. Narrowing the gene term to the TITLE puts it 2nd. Narrowing is
+    right here and wrong for the relevance pass, which needs abstract
+    matches to see current work that does not lead with the gene name.
 
-    The two passes still leave a hole. Newest-first stops at the last few
-    months, and all-time citation counts favour papers that have had
-    decades to accrue them, so on TYK2 nothing from 2020-2025 was
-    retrieved: the deucravacitinib trials and approval were absent. The
-    established pass searches the last established_years years on the
-    landmark pass's title query. Ranked by total citations it still took
-    only the window's oldest years (TYK2: 2022-2023, nothing from
-    2024-2025), so it fetches the top established_pool records by citations
-    and keeps the established with the most citations per year (see
-    citations_per_year). Europe PMC has no per-year sort.
+    One pass per EVIDENCE_TOPICS entry searches a fixed evidence angle -
+    genetics, clinical, safety, contradiction. These run every time
+    whatever the gene, because an adverse effect or a null result that is
+    only found when someone thinks to look for it is not reproducible
+    coverage. The TYK2 report's one opposing finding was reached by
+    chance, not by a search.
+
+    `recent_years_n` covers the last `recent_years` years. Without it the
+    run has a hole where a target's clinical work sits: relevance reaches
+    back only a year or two at these budgets, citation ranking over all
+    years cannot outrank decades-old work, and neither side of the snowball
+    lands there either. On TYK2 that hole was 2022-2024 - every
+    deucravacitinib trial and the approval.
+
+    Inside that window the pass ranks by citations per year, not by total
+    citations, because citations accrue with time: ranked by total, a
+    five-year window returns only its oldest two years (TYK2: 2022-2023,
+    missing the 2024 zasocitinib trial). Europe PMC has no per-year sort,
+    so it takes `recent_years_pool` records by citation count and re-ranks
+    them here.
+
+    `referenced` and `citing` follow the two sides of the best-cited
+    records already found (see snowball), reaching the work the field
+    credits and the work that came after.
 
     Records are deduplicated on (source, id). Each carries a
     `retrieval_pass` key naming every pass that returned it, joined with
-    "; " (e.g. "landmark; established"). A record in more than one pass is
-    current and well cited, which is worth knowing when weighting claims.
+    "; ". A record found by more than one pass is both current and well
+    cited, which is worth knowing when weighting claims.
 
-    recent, landmark and established are record counts, not pages; 0 skips
-    a pass.
+    Counts are record counts, not pages; 0 skips a pass.
     """
-    out = {}
-    infos = []
-    this_year = datetime.date.today().year
-    window = (this_year - established_years + 1, this_year)
     if (search_terms.get("gene") or "").upper() != gene.upper():
         raise ValueError("search_terms are for %r, not %r"
                          % (search_terms.get("gene"), gene))
     full_name = search_terms.get("full_name")
     terms = {k: search_terms.get(k) or None for k in ("aliases", "context", "ambiguous")}
-    passes = (
-        ("recent", build_query(gene, extra_terms, include_preprints, **terms),
-         None, recent, None),
-        ("landmark", build_query(gene, extra_terms, include_preprints,
-                                 title_only=True, full_name=full_name, **terms),
-         SORT_CITED, landmark, None),
-        ("established", build_query(gene, extra_terms, include_preprints,
-                                    title_only=True, full_name=full_name,
-                                    years=window, **terms),
-         SORT_CITED, established, established_pool),
-    )
+    broad = build_query(gene, extra_terms, include_preprints, **terms)
+    titled = build_query(gene, extra_terms, include_preprints,
+                         title_only=True, full_name=full_name, **terms)
+    this_year = datetime.date.today().year
+    window = (this_year - recent_years + 1, this_year)
+    passes = [("relevant", broad, None, relevant, None),
+              ("landmark", titled, SORT_CITED, landmark, None),
+              ("recent_years", build_query(gene, extra_terms, include_preprints,
+                                           title_only=True, full_name=full_name,
+                                           years=window, **terms),
+               SORT_CITED, recent_years_n, recent_years_pool)]
+    for topic, topic_terms in EVIDENCE_TOPICS.items():
+        passes.append((topic, build_query(gene, topic_terms, include_preprints, **terms),
+                       None, per_topic, None))
+
+    out = {}
+    infos = []
+
+    def add(found, label):
+        for hit in found:
+            key = (hit.get("source"), hit.get("id"))
+            if key in out:
+                if label not in out[key]["retrieval_pass"].split("; "):
+                    out[key]["retrieval_pass"] += "; " + label
+            else:
+                hit["retrieval_pass"] = label
+                out[key] = hit
+
     for label, query, sort_key, n, pool in passes:
         if n <= 0:
             continue
@@ -395,16 +521,23 @@ def search_balanced(gene: str, search_terms: dict,
             rate = lambda h: citations_per_year(h, this_year)
             found = sorted(found, key=lambda h: (rate(h) is not None, rate(h) or 0),
                            reverse=True)[:n]
-        year_min, year_max = year_span(found)
         infos.append(pass_info(label, query, sort_key, n, len(found),
-                              year_min, year_max, reranked_from=pool))
-        for hit in found:
-            key = (hit.get("source"), hit.get("id"))
-            if key in out:
-                out[key]["retrieval_pass"] += "; " + label
-            else:
-                hit["retrieval_pass"] = label
-                out[key] = hit
+                               *year_span(found), reranked_from=pool))
+        add(found, label)
+
+    cited = lambda h: int(h.get("citedByCount") or 0)
+    seeds = sorted(out.values(), key=cited, reverse=True)[:snowball_seeds]
+    for label, link, n in (("referenced", LINK_REFERENCES, referenced),
+                           ("citing", LINK_CITATIONS, citing)):
+        if not seeds or n <= 0:
+            continue
+        found = sorted(snowball(seeds, link, timeout=timeout),
+                       key=cited, reverse=True)[:n]
+        infos.append(pass_info(label, "; ".join(source_id(s) for s in seeds),
+                               "%s, by citation count" % link,
+                               n, len(found), *year_span(found)))
+        add(found, label)
+
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     return retrieval_record(list(out.values()), infos, stamp, search_terms)
 

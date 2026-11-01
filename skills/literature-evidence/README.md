@@ -8,11 +8,13 @@ and PMID, to `results/literature-evidence/<gene>/`.
 
 | File | Purpose |
 |---|---|
-| `kernel.py` | `build_query` builds the Europe PMC query, including bioRxiv/medRxiv preprints (source `PPR`) by default — pass `include_preprints=False` to exclude them. `search_europepmc` fetches and pages through results. `publications_table` shapes the raw hits, flagging preprints via `is_preprint`. `claims_table` validates hand-extracted claim rows. `write_run` calls both and writes their CSVs plus the README. |
+| `kernel.py` | `build_query` builds the Europe PMC query, including bioRxiv/medRxiv preprints (source `PPR`) by default — pass `include_preprints=False` to exclude them. `search_europepmc` fetches and pages through results. `search_balanced` is the entry point: it runs a relevance pass, two citation-ranked passes, one pass per `EVIDENCE_TOPICS` entry, and a `snowball` off the best-cited records via the references and citations endpoints (`fetch_linked_keys`, then `fetch_records_by_key` to recover the abstracts those endpoints omit). `publications_table` shapes the raw hits, flagging preprints via `is_preprint`. `claims_table` validates hand-extracted claim rows. `write_run` calls both and writes their CSVs plus the README. |
 | `SKILL.md` | Workflow, principles, and verification steps. |
 
-Module constants: `EUROPEPMC_SEARCH_URL`, `EUROPEPMC_ARTICLE_URL`,
-`PUBLICATION_COLUMNS`, `CLAIM_TYPES`, `CLAIM_COLUMNS`, `PREPRINT_SOURCE`.
+Module constants: `EUROPEPMC_REST_BASE`, `EUROPEPMC_SEARCH_URL`,
+`EUROPEPMC_LINK_URL`, `EUROPEPMC_ARTICLE_URL`, `EVIDENCE_TOPICS`,
+`LINK_REFERENCES`, `LINK_CITATIONS`, `PUBLICATION_COLUMNS`, `CLAIM_TYPES`,
+`CLAIM_COLUMNS`, `DIRECTIONS`, `PREPRINT_SOURCE`.
 
 ## Running it
 

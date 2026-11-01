@@ -21,25 +21,21 @@ description: Search Europe PMC for a gene's literature and extract disease-assoc
   their reasons in the Retrieval finding. Narrow a broad symbol with
   `extra_terms` (e.g. `"drug target"`, `"biomarker"`) rather than
   requesting more records.
-- Three passes run: `recent` (newest first), `landmark` (most cited ever,
-  title match) and `established` (most cited per year in the last
-  `established_years` years, re-ranked from a larger candidate pool). See
-  `search_balanced` for why each is needed.
+- Passes: `relevant` (relevance order, broad), `landmark` (most cited
+  ever, title match), `recent_years` (the last few years, ranked by
+  citations per year), one per `EVIDENCE_TOPICS` entry, and `referenced`
+  and `citing` snowballed off the best-cited records found. See
+  `search_balanced` and `snowball` for what each covers and the gap each
+  one closes.
+- The evidence-topic passes run every time, whatever the gene, and the
+  topics are fixed in `EVIDENCE_TOPICS`. Do not vary them per run: an
+  adverse effect or a null result that is only found when someone thinks
+  to search for it is not reproducible coverage. Gene-specific wording
+  belongs in the search terms, not here.
 - **Do not use `search_europepmc` alone for a dossier on an established
-  gene.** The Europe PMC default order is newest first, not relevance, so
-  a single pass returns only the last year or two. On WRN it returned
-  nothing before 2025 at either 12 or 30 records, omitting the 2019 papers
-  that established the target — and raising the cap does not help, because
-  the order, not the count, is what excludes them. A run that reports the
-  current front of a field as if it were the field is the failure this
-  guards against.
-- Citation sorting alone does not fix it either. On a title-or-abstract
-  query the founding WRN paper ranks 15th by citations, behind papers that
-  merely mention the gene; half the top 30 are off topic. `search_balanced`
-  therefore narrows the gene term to the title for the landmark pass only,
-  where that paper ranks 2nd, and keeps abstract matching for the recent
-  pass so current work that does not name the gene in its title is still
-  seen. Verified across WRN, KRAS and TNIK.
+  gene.** One ordering cannot cover a field. A run that reports the
+  current front of a field as if it were the field is the failure
+  `search_balanced` guards against.
 - Each row's `retrieval_pass` names every pass that returned it, joined
   with "; ". Report the year span of what was retrieved — if it starts at
   last year, the retrieval is the finding.
@@ -126,11 +122,15 @@ a claims table has passed both. What still needs a human eye:
 - Skim the landmark titles. If several are not about the gene, or the
   list is thin for a well-known gene, re-invoke `literature-search-terms`
   with that finding and search again before extracting claims.
-- All three passes contributed. If no `retrieval_pass` names `landmark`
-  or `established`, that query returned nothing — check the symbol
-  appears in titles rather than assuming no such papers exist.
-- The year coverage has no gap between the landmark span and the recent
-  span that the established pass should have filled.
+- Every pass contributed. If no `retrieval_pass` names `landmark` or
+  `recent_years`, that query returned nothing — check the symbol appears
+  in titles rather than assuming no such papers exist. If no row names
+  `referenced` or `citing`, the snowball found no seeds.
+- The year coverage has no gap between the landmark span and the current
+  year that `recent_years` and the snowball should have filled.
+- The safety and contradiction passes returned something, or the findings
+  say plainly that a search for adverse effects and opposing results
+  found none.
 - `duplicate_titles` in `retrieval.json` is empty, or the duplicates are
   accounted for when claims are counted.
 - The landmark pass ranks by citation count, which favours older work and

@@ -105,8 +105,10 @@ def test_search_balanced_records_search_terms(monkeypatch):
                  ambiguous=["PELO"])
     r = kernel.search_balanced("PELO", pelo)
     assert r["search_terms"] == pelo
+    # no records, so no seeds and no snowball pass: every pass is a search
     assert all('ABSTRACT:"ribosome"' in p["query"] for p in r["passes"])
     assert all('TITLE:"pelota"' in p["query"] for p in r["passes"])
+    assert "snowball" not in [p["label"] for p in r["passes"]]
 
 
 def test_search_balanced_rejects_terms_for_another_gene(monkeypatch):
@@ -120,7 +122,7 @@ def test_build_query_rejects_quote_in_full_name():
         kernel.build_query("TYK2", title_only=True, full_name='tyrosine "kinase" 2')
 
 
-def test_search_balanced_runs_three_passes_and_joins_labels(monkeypatch):
+def test_search_balanced_runs_every_pass_and_joins_labels(monkeypatch):
     calls = []
 
     def fake_search(query, page_size, max_pages, timeout, sort):
@@ -128,36 +130,80 @@ def test_search_balanced_runs_three_passes_and_joins_labels(monkeypatch):
         return [dict(HIT_MED)] if sort == kernel.SORT_CITED else []
 
     monkeypatch.setattr(kernel, "search_europepmc", fake_search)
-    result = kernel.search_balanced("TYK2", terms("TYK2", "tyrosine kinase 2"), established_years=5)
-    assert [p["label"] for p in result["passes"]] == ["recent", "landmark", "established"]
+    monkeypatch.setattr(kernel, "snowball",
+                        lambda seeds, link, timeout=60: [dict(HIT_PPR)])
+    result = kernel.search_balanced("TYK2", terms("TYK2", "tyrosine kinase 2"))
+    assert [p["label"] for p in result["passes"]] == (
+        ["relevant", "landmark", "recent_years"] + list(kernel.EVIDENCE_TOPICS)
+        + ["referenced", "citing"])
     assert "PUB_YEAR:[" in calls[2][0]
     assert 'TITLE:"tyrosine kinase 2"' in calls[1][0]
-    assert result["hits"][0]["retrieval_pass"] == "landmark; established"
+    # every evidence topic is searched on every run, whatever the gene
+    for topic_terms in kernel.EVIDENCE_TOPICS.values():
+        assert any(topic_terms in q for q, _ in calls)
+    by_id = {h["id"]: h for h in result["hits"]}
+    # the fixture answers both citation-ranked passes, so its labels join
+    assert by_id[HIT_MED["id"]]["retrieval_pass"] == "landmark; recent_years"
+    assert by_id[HIT_PPR["id"]]["retrieval_pass"] == "referenced; citing"
 
 
-def test_established_pass_reranks_by_citations_per_year(monkeypatch):
-    year = kernel.datetime.date.today().year
-    old = {**HIT_MED, "id": "1", "pubYear": str(year - 4), "citedByCount": 100}  # 20/yr
-    new = {**HIT_MED, "id": "2", "pubYear": str(year - 1), "citedByCount": 60}   # 30/yr
-    undated = {**HIT_MED, "id": "3", "pubYear": None, "citedByCount": 500}
-    pools = []
+def test_search_balanced_snowballs_from_the_best_cited_records(monkeypatch):
+    low = {**HIT_MED, "id": "low", "citedByCount": 1}
+    high = {**HIT_MED, "id": "high", "citedByCount": 900}
+    seen = {}
 
-    def fake_search(query, page_size, max_pages, timeout, sort):
-        if "PUB_YEAR" not in query:
-            return []
-        pools.append(page_size)
-        return [dict(undated), dict(old), dict(new)]
+    monkeypatch.setattr(kernel, "search_europepmc",
+                        lambda *a, **k: [dict(low), dict(high)])
 
-    monkeypatch.setattr(kernel, "search_europepmc", fake_search)
-    result = kernel.search_balanced("TYK2", terms("TYK2", None), established=2, established_pool=50)
-    assert pools == [50]
-    assert [h["id"] for h in result["hits"]] == ["2", "1"]
-    assert result["passes"][-1]["reranked_from"] == 50
+    def fake_snowball(seeds, link, timeout=60):
+        seen["ids"] = [s["id"] for s in seeds]
+        return []
+
+    monkeypatch.setattr(kernel, "snowball", fake_snowball)
+    kernel.search_balanced("TYK2", terms("TYK2", None), snowball_seeds=1)
+    assert seen["ids"] == ["high"]
 
 
-def test_citations_per_year_missing_values():
-    assert kernel.citations_per_year({"citedByCount": None, "pubYear": "2020"}, 2026) is None
-    assert kernel.citations_per_year({"citedByCount": 12, "pubYear": "2026"}, 2026) == 12
+def test_snowball_refetches_linked_records_for_their_abstracts(monkeypatch):
+    linked = {}
+
+    def fake_linked(source, ident, link, limit=100, timeout=60):
+        linked[link] = (source, ident)
+        return [("MED", "111")] if link == kernel.LINK_REFERENCES else [("MED", "222")]
+
+    def fake_by_key(keys, batch_size=25, timeout=60):
+        return [{**HIT_MED, "id": i, "abstractText": "text"} for _, i in keys]
+
+    monkeypatch.setattr(kernel, "fetch_linked_keys", fake_linked)
+    monkeypatch.setattr(kernel, "fetch_records_by_key", fake_by_key)
+    seed = [{"source": "MED", "id": "seed"}]
+    refs = kernel.snowball(seed, kernel.LINK_REFERENCES)
+    citing = kernel.snowball(seed, kernel.LINK_CITATIONS)
+    assert linked == {kernel.LINK_REFERENCES: ("MED", "seed"),
+                      kernel.LINK_CITATIONS: ("MED", "seed")}
+    assert [h["id"] for h in refs] == ["111"]
+    assert [h["id"] for h in citing] == ["222"]
+    assert all(h.get("abstractText") for h in refs + citing)
+
+
+def test_snowball_drops_the_seeds_themselves(monkeypatch):
+    monkeypatch.setattr(kernel, "fetch_linked_keys",
+                        lambda *a, **k: [("MED", "seed"), ("MED", "other")])
+    monkeypatch.setattr(kernel, "fetch_records_by_key",
+                        lambda keys, **k: [{"source": s, "id": i} for s, i in keys])
+    out = kernel.snowball([{"source": "MED", "id": "seed"}], kernel.LINK_REFERENCES)
+    assert [h["id"] for h in out] == ["other"]
+
+
+def test_fetch_records_by_key_batches_per_source(monkeypatch):
+    queries = []
+    monkeypatch.setattr(kernel, "search_europepmc",
+                        lambda query, **k: queries.append(query) or [])
+    kernel.fetch_records_by_key([("MED", "1"), ("MED", "2"), ("PPR", "3")],
+                                batch_size=2)
+    assert len(queries) == 2
+    assert 'EXT_ID:"1"' in queries[0] and "AND SRC:MED" in queries[0]
+    assert 'EXT_ID:"3"' in queries[1] and "AND SRC:PPR" in queries[1]
 
 
 
