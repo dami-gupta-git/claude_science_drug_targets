@@ -118,6 +118,26 @@ DIRECTIONS = {
     "reduced": "the gene's expression or activity is lowered in, or by, the entity",
 }
 
+# A single word of letters, digits or hyphens, which can carry a trailing
+# wildcard; anything else (a phrase, punctuation) has to stay a quoted
+# exact match.
+WILDCARDABLE_PATTERN = r"[A-Za-z0-9-]+\Z"
+
+
+def context_term_clause(term: str) -> str:
+    """Title-or-abstract clause matching one context word.
+
+    Europe PMC does not stem: ABSTRACT:"ribosome" does not match an
+    abstract that says "ribosomes", which cost the main PELO cancer paper
+    its place in a run. A trailing wildcard does match both, but only
+    unquoted - ABSTRACT:"ribosom*" matches nothing - so it is used for
+    single words and a phrase stays an exact quoted match.
+    """
+    if re.fullmatch(WILDCARDABLE_PATTERN, term):
+        return "TITLE:%s* OR ABSTRACT:%s*" % (term, term)
+    return 'TITLE:"%s" OR ABSTRACT:"%s"' % (term, term)
+
+
 def build_query(gene: str, extra_terms: str | None = None,
                 include_preprints: bool = True,
                 title_only: bool = False,
@@ -163,8 +183,7 @@ def build_query(gene: str, extra_terms: str | None = None,
     flagged = {n.upper() for n in ambiguous or []}
     if bool(flagged) != bool(context):
         raise ValueError("context and ambiguous must both be empty or both be set")
-    context_clause = " OR ".join('TITLE:"%s" OR ABSTRACT:"%s"' % (c, c)
-                                 for c in context or [])
+    context_clause = " OR ".join(context_term_clause(c) for c in context or [])
     clauses = []
     for n in names:
         clause = ('TITLE:"%s"' % n if title_only

@@ -89,7 +89,15 @@ def test_build_query_context_applies_only_to_ambiguous_names():
     q = kernel.build_query("MAP3K13", title_only=True, aliases=["LZK"],
                            context=["kinase", "JNK"], ambiguous=["LZK"])
     assert q == ('(TITLE:"MAP3K13" OR ((TITLE:"LZK") AND '
-                 '(TITLE:"kinase" OR ABSTRACT:"kinase" OR TITLE:"JNK" OR ABSTRACT:"JNK")))')
+                 '(TITLE:kinase* OR ABSTRACT:kinase* OR TITLE:JNK* OR ABSTRACT:JNK*)))')
+
+
+def test_context_terms_match_word_forms_but_phrases_stay_exact():
+    # Europe PMC does not stem, so a single word takes a trailing wildcard
+    assert kernel.context_term_clause("ribosome") == (
+        "TITLE:ribosome* OR ABSTRACT:ribosome*")
+    assert kernel.context_term_clause("hepatocyte growth factor") == (
+        'TITLE:"hepatocyte growth factor" OR ABSTRACT:"hepatocyte growth factor"')
 
 
 def test_build_query_context_and_ambiguous_go_together():
@@ -106,7 +114,7 @@ def test_search_balanced_records_search_terms(monkeypatch):
     r = kernel.search_balanced("PELO", pelo)
     assert r["search_terms"] == pelo
     # no records, so no seeds and no snowball pass: every pass is a search
-    assert all('ABSTRACT:"ribosome"' in p["query"] for p in r["passes"])
+    assert all("ABSTRACT:ribosome*" in p["query"] for p in r["passes"])
     assert all('TITLE:"pelota"' in p["query"] for p in r["passes"])
     assert "snowball" not in [p["label"] for p in r["passes"]]
 
